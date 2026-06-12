@@ -148,89 +148,100 @@ PPOMPPU_SEARCH_KEYWORDS = ["아이즈모바일", "아이즈"]
 _ppomppu_done = False
 
 async def crawl_ppomppu(page, keyword: str) -> list[dict]:
-    """뽐뿌 통합검색 → 커뮤니티 결과만 수집 → 7일 이내 필터링"""
+    """뽐뿌 통합검색 → 커뮤니티 결과만 수집 → 7일 이내 필터링
+    
+    확인된 HTML 구조:
+    - 제목 링크: <a href="/zboard/view.php?id=ppomppu&no=710199&keyword=...">
+    - 날짜: 텍스트 "뽐뿌게시판] 조회수: 7254 | 2026.06.09 | 1 | 0" 형태
+    - 중복 링크 있음 (제목 + 본문 미리보기가 같은 URL)
+    """
     global _ppomppu_done
     if _ppomppu_done:
         return []
     _ppomppu_done = True
 
     results = []
-    seen_urls = set()
+    seen_nos = set()  # no= 파라미터 기준 중복 제거
 
     try:
         for kw in PPOMPPU_SEARCH_KEYWORDS:
             encoded = quote(kw.encode("euc-kr"))
-            url = f"https://www.ppomppu.co.kr/search_bbs.php?bbs_cate=&keyword={encoded}"
+            # 확인된 URL: bbs_cate=2 (커뮤니티), search_type=sub_memo (제목+내용)
+            url = f"https://www.ppomppu.co.kr/search_bbs.php?page_size=20&bbs_cate=2&keyword={encoded}&order_type=date&search_type=sub_memo"
             print(f"    [뽐뿌] 검색: '{kw}' → {url}")
 
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(3)
 
-            # 확인된 구조: <a href="/zboard/view.php?id=ppomppu&no=...">
+            # no= 파라미터 기준으로 게시글 묶기
             all_links = await page.query_selector_all("a[href*='view.php?id=ppomppu']")
-            if not all_links:
-                all_links = await page.query_selector_all("a[href*='/zboard/view.php']")
             print(f"    [뽐뿌] '{kw}' 링크 {len(all_links)}개 발견")
 
-            for link in all_links[:30]:
+            # no= 기준으로 첫 번째 링크(제목)만 수집
+            for link in all_links:
                 try:
                     href = await link.get_attribute("href") or ""
                     if not href:
                         continue
 
-                    full_url = f"https://www.ppomppu.co.kr{href}" if href.startswith("/") else href
-
-                    if full_url in seen_urls:
+                    # no= 파라미터 추출
+                    import re
+                    no_match = re.search(r"no=(\d+)", href)
+                    if not no_match:
                         continue
-                    seen_urls.add(full_url)
+                    no = no_match.group(1)
 
-                    # 제목: font.comment-cnt(댓글수) 제외한 텍스트
+                    # 중복 제거
+                    if no in seen_nos:
+                        continue
+
+                    # 제목 추출 (font.comment-cnt 제외)
                     title = await page.evaluate("""el => {
                         const clone = el.cloneNode(true);
                         const font = clone.querySelector('font.comment-cnt');
                         if (font) font.remove();
-                        return clone.innerText || clone.textContent || '';
+                        return (clone.innerText || clone.textContent || '').trim();
                     }""", link)
                     title = title.strip()
-                    if not title or len(title) < 2:
+
+                    # 본문 미리보기(짧은 텍스트) 제외, 실제 제목만
+                    if not title or len(title) < 5:
                         continue
 
-                    # 제목에 아이즈 키워드 없으면 제외
-                    if not any(k in title for k in PPOMPPU_SEARCH_KEYWORDS):
+                    # 키워드 확인
+                    title_clean = title.replace("[","").replace("]","")
+                    if not any(k in title_clean for k in PPOMPPU_SEARCH_KEYWORDS):
                         continue
 
-                    # 부모 tr에서 날짜/조회/댓글 추출
-                    row = await link.evaluate_handle("el => el.closest('tr') || el.parentElement")
+                    seen_nos.add(no)
+                    full_url = f"https://www.ppomppu.co.kr{href.split('&keyword')[0]}"
+
+                    # 날짜/조회수: 부모 요소 텍스트에서 파싱
+                    # 형태: "뽐뿌게시판] 조회수: 7254 | 2026.06.09 | 1 | 0"
+                    parent = await link.evaluate_handle("el => el.closest('li') || el.closest('div') || el.parentElement")
+                    parent_text = await page.evaluate("el => el.innerText || el.textContent || ''", parent)
+
                     date_text = ""
                     view_text = "0"
                     reply_text = "0"
 
-                    # span 날짜 탐색
-                    date_el = await row.query_selector("span")
-                    if date_el:
-                        date_candidate = (await date_el.inner_text()).strip()
-                        if "." in date_candidate or "-" in date_candidate:
-                            date_text = date_candidate
+                    # 날짜 파싱: YYYY.MM.DD 패턴
+                    date_match = re.search(r"(\d{4}\.\d{2}\.\d{2})", parent_text)
+                    if date_match:
+                        date_text = date_match.group(1)
 
-                    # td 전체에서 날짜/조회 추출
-                    cells = await row.query_selector_all("td")
-                    if not date_text and len(cells) >= 2:
-                        for cell in cells:
-                            cell_text = (await cell.inner_text()).strip()
-                            if "." in cell_text and len(cell_text) <= 12:
-                                date_text = cell_text
-                                break
-                    if len(cells) >= 1:
-                        view_text = (await cells[-1].inner_text()).strip()
+                    # 조회수 파싱
+                    view_match = re.search(r"조회수[:\s]*(\d+)", parent_text)
+                    if view_match:
+                        view_text = view_match.group(1)
 
                     # 댓글수: font.comment-cnt
                     reply_el = await link.query_selector("font.comment-cnt")
                     if reply_el:
                         reply_text = (await reply_el.inner_text()).strip()
 
-                    # 7일 이내만 포함 (날짜 파싱 실패 시 포함)
+                    # 7일 이내만 포함
                     if date_text and not is_within_week(date_text):
-                        print(f"    [뽐뿌] 날짜 필터 탈락: {date_text} / {title[:20]}")
                         continue
 
                     results.append({
@@ -244,7 +255,7 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                     })
                     print(f"    [뽐뿌] 수집: {title[:40]}...")
 
-                except Exception:
+                except Exception as e:
                     continue
 
             await asyncio.sleep(1)
