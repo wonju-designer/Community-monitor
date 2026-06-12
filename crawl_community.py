@@ -3,21 +3,24 @@
 - 디시인사이드 알뜰폰 마이너 갤러리
 - 뽐뿌 휴대폰 포럼
 - FM코리아 검색
+- 리포트 생성: Google Gemini API (무료)
+- 발송: Gmail SMTP
 """
 
 import os
 import asyncio
 import datetime
 import smtplib
+import json
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import quote
 
-import anthropic
+import httpx
 from playwright.async_api import async_playwright
 
 # ── 환경 변수 ──────────────────────────────────────────────
-ANTHROPIC_API_KEY  = os.environ["ANTHROPIC_API_KEY"]
+GEMINI_API_KEY     = os.environ["GEMINI_API_KEY"]
 GMAIL_USER         = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 REPORT_TO          = os.environ["REPORT_TO"]
@@ -49,7 +52,6 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
 
         for row in rows[:20]:
             try:
-                # 공지 제외
                 notice = await row.get_attribute("class")
                 if notice and "notice" in notice:
                     continue
@@ -86,7 +88,6 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
 
         print(f"    [디시] '{keyword}' 결과: {len(results)}건")
 
-        # 댓글 수집 (상위 3개)
         for item in results[:3]:
             try:
                 if not item["url"]:
@@ -106,26 +107,17 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
     return results
 
 
-# ── 뽐뿌 휴대폰 포럼 ──────────────────────────────────────
+# ── 뽐뿌 ──────────────────────────────────────────────────
 async def crawl_ppomppu(page, keyword: str) -> list[dict]:
     results = []
     try:
         encoded = quote(keyword)
-        url = f"https://www.ppomppu.co.kr/zboard/zboard.php?id=phone&category=6&search={encoded}&searchCategory=s"
+        url = f"https://www.ppomppu.co.kr/search.php?search_type=sub_memo&keyword={encoded}"
         print(f"    [뽐뿌] URL: {url}")
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(2)
 
-        # 뽐뿌 검색 URL로 fallback
         rows = await page.query_selector_all("tr.list0, tr.list1")
-        if not rows:
-            # 검색 페이지로 재시도
-            url2 = f"https://www.ppomppu.co.kr/search.php?search_type=sub_memo&keyword={encoded}"
-            print(f"    [뽐뿌] fallback URL: {url2}")
-            await page.goto(url2, wait_until="domcontentloaded", timeout=30000)
-            await asyncio.sleep(2)
-            rows = await page.query_selector_all("tr.list0, tr.list1")
-
         print(f"    [뽐뿌] {len(rows)}개 행 발견")
 
         for row in rows[:20]:
@@ -147,8 +139,8 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                 href = await title_el.get_attribute("href")
 
                 cells = await row.query_selector_all("td")
-                date_text  = (await cells[-2].inner_text()).strip() if len(cells) >= 2 else ""
-                view_text  = (await cells[-1].inner_text()).strip() if len(cells) >= 1 else "0"
+                date_text = (await cells[-2].inner_text()).strip() if len(cells) >= 2 else ""
+                view_text = (await cells[-1].inner_text()).strip() if len(cells) >= 1 else "0"
                 reply_text = "0"
 
                 reply_el = await row.query_selector(".replyNum, .comment, span.replyCount")
@@ -200,13 +192,7 @@ async def crawl_fmkorea(page, keyword: str) -> list[dict]:
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(2)
 
-        selectors = [
-            "ul.searchList li",
-            ".search_result li",
-            "li.li",
-            "ul li.search-result-item",
-        ]
-
+        selectors = ["ul.searchList li", ".search_result li", "li.li"]
         items = []
         for sel in selectors:
             items = await page.query_selector_all(sel)
@@ -267,12 +253,10 @@ async def crawl_fmkorea(page, keyword: str) -> list[dict]:
     return results
 
 
-# ── Claude 감성 분석 + 리포트 생성 ────────────────────────
-def analyze_and_report(all_posts: list[dict], week_label: str) -> str:
+# ── Gemini로 감성 분석 + 리포트 생성 ──────────────────────
+async def analyze_and_report(all_posts: list[dict], week_label: str) -> str:
     if not all_posts:
         return "이번 주 수집된 언급 데이터가 없습니다."
-
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
     site_summary = {}
     for post in all_posts:
@@ -322,12 +306,18 @@ def analyze_and_report(all_posts: list[dict], week_label: str) -> str:
 
 한국어로 간결하게 작성해주세요."""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return response.content[0].text
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(url, json=payload)
+        if resp.status_code != 200:
+            print(f"[Gemini] 오류: {resp.status_code} {resp.text}")
+            return f"리포트 생성 실패 (Gemini API 오류: {resp.status_code})"
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 # ── Gmail 발송 ─────────────────────────────────────────────
@@ -407,8 +397,8 @@ async def main():
 
     print(f"\n[수집 완료] 총 {len(unique_posts)}건 (중복 제거 후)")
 
-    print("[분석] Claude 감성 분석 + 리포트 생성 중...")
-    report = analyze_and_report(unique_posts, week_label)
+    print("[분석] Gemini 감성 분석 + 리포트 생성 중...")
+    report = await analyze_and_report(unique_posts, week_label)
     print(report)
 
     print("[발송] Gmail 전송 중...")
