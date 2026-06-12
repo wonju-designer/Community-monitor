@@ -108,54 +108,51 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
 async def crawl_ppomppu(page, keyword: str) -> list[dict]:
     results = []
     try:
-        encoded = quote(keyword)
-        url = f"https://www.ppomppu.co.kr/search.php?search_type=sub_memo&keyword={encoded}"
-        print(f"    [뽐뿌] URL: {url}")
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
+        # 휴대폰 포럼 게시판 페이지별 수집 후 키워드 필터링
+        base_url = "https://www.ppomppu.co.kr/zboard/zboard.php?id=phone&category=6&page={page}"
+        print(f"    [뽐뿌] 휴대폰 포럼에서 '{keyword}' 검색 중...")
 
-        rows = await page.query_selector_all("tr.list0, tr.list1")
-        print(f"    [뽐뿌] {len(rows)}개 행 발견")
+        for page_num in range(1, 4):  # 최대 3페이지
+            url = base_url.format(page=page_num)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(1.5)
 
-        for row in rows[:20]:
-            try:
-                title_el = await row.query_selector("a.baseList-title, td.baseList-title a, .title a, td.title a")
-                if not title_el:
-                    links = await row.query_selector_all("a")
-                    for l in links:
-                        href = await l.get_attribute("href") or ""
-                        if "no=" in href or "view" in href:
-                            title_el = l
-                            break
-                if not title_el:
+            title_els = await page.query_selector_all("a.baseList-title")
+            print(f"    [뽐뿌] {page_num}페이지 {len(title_els)}개 게시글 발견")
+
+            found_in_page = 0
+            for title_el in title_els:
+                try:
+                    title = (await title_el.inner_text()).strip()
+                    if not title or keyword not in title:
+                        continue
+
+                    href = await title_el.get_attribute("href")
+                    full_url = f"https://www.ppomppu.co.kr/zboard/{href}" if href and not href.startswith("http") else (href or "")
+
+                    # 부모 행에서 날짜/조회/댓글 추출
+                    row = await title_el.evaluate_handle("el => el.closest('tr')")
+                    cells = await row.query_selector_all("td")
+                    date_text  = (await cells[-2].inner_text()).strip() if len(cells) >= 2 else ""
+                    view_text  = (await cells[-1].inner_text()).strip() if len(cells) >= 1 else "0"
+                    reply_el   = await row.query_selector("span.baseList-replyCount, .replyNum")
+                    reply_text = (await reply_el.inner_text()).strip().replace("[","").replace("]","") if reply_el else "0"
+
+                    results.append({
+                        "site": "뽐뿌",
+                        "title": title,
+                        "url": full_url,
+                        "date": date_text,
+                        "reply_count": reply_text,
+                        "view_count": view_text,
+                        "comments": [],
+                    })
+                    found_in_page += 1
+                except Exception:
                     continue
 
-                title = (await title_el.inner_text()).strip()
-                if not title or len(title) < 2:
-                    continue
-                href = await title_el.get_attribute("href")
-
-                cells = await row.query_selector_all("td")
-                date_text  = (await cells[-2].inner_text()).strip() if len(cells) >= 2 else ""
-                view_text  = (await cells[-1].inner_text()).strip() if len(cells) >= 1 else "0"
-                reply_text = "0"
-                reply_el   = await row.query_selector(".replyNum, .comment, span.replyCount")
-                if reply_el:
-                    reply_text = (await reply_el.inner_text()).strip().replace("[","").replace("]","")
-
-                full_url = f"https://www.ppomppu.co.kr{href}" if href and href.startswith("/") else (href or "")
-
-                results.append({
-                    "site": "뽐뿌",
-                    "title": title,
-                    "url": full_url,
-                    "date": date_text,
-                    "reply_count": reply_text,
-                    "view_count": view_text,
-                    "comments": [],
-                })
-            except Exception:
-                continue
+            if found_in_page == 0 and page_num > 1:
+                break  # 더 이상 결과 없으면 중단
 
         print(f"    [뽐뿌] '{keyword}' 결과: {len(results)}건")
 
@@ -188,32 +185,33 @@ async def crawl_fmkorea(page, keyword: str) -> list[dict]:
         await page.goto(url, wait_until="domcontentloaded", timeout=30000)
         await asyncio.sleep(2)
 
-        selectors = ["ul.searchList li", ".search_result li", "li.li"]
-        items = []
-        for sel in selectors:
-            items = await page.query_selector_all(sel)
-            if len(items) > 1:
-                print(f"    [FM코리아] 셀렉터 '{sel}' 로 {len(items)}개 발견")
-                break
+        # 확인된 셀렉터: a href="/숫자" 형태
+        title_els = await page.query_selector_all("a[href^='/']")
+        print(f"    [FM코리아] {len(title_els)}개 링크 발견")
 
-        for item in items[:20]:
+        for title_el in title_els[:50]:
             try:
-                title_el = await item.query_selector("h3 a, .title a, a.title, h4 a, a")
-                if not title_el:
+                href = await title_el.get_attribute("href") or ""
+                # 숫자로만 이루어진 경로 (게시글 URL 패턴)
+                if not href or not href.strip("/").isdigit():
                     continue
+
+                # 텍스트에서 strong 태그 제거 후 추출
                 title = (await title_el.inner_text()).strip()
                 if not title or len(title) < 2:
                     continue
-                href = await title_el.get_attribute("href")
 
-                date_el  = await item.query_selector(".regdate, time, .date")
-                reply_el = await item.query_selector(".replyCount, .comment_cnt, .reply")
-                view_el  = await item.query_selector(".readCount, .hit, .view")
+                full_url = f"https://www.fmkorea.com{href}"
+
+                # 부모 요소에서 날짜/조회/댓글 추출
+                parent = await title_el.evaluate_handle("el => el.closest('li') || el.parentElement")
+                date_el  = await parent.query_selector(".regdate, time, .date, span.time")
+                reply_el = await parent.query_selector(".replyCount, .comment_cnt, .noti_reply")
+                view_el  = await parent.query_selector(".readCount, .hit, .noti_read")
 
                 date_text  = (await date_el.inner_text()).strip()  if date_el  else ""
                 reply_text = (await reply_el.inner_text()).strip() if reply_el else "0"
                 view_text  = (await view_el.inner_text()).strip()  if view_el  else "0"
-                full_url   = f"https://www.fmkorea.com{href}" if href and href.startswith("/") else (href or "")
 
                 results.append({
                     "site": "FM코리아",
@@ -324,18 +322,67 @@ async def analyze_and_report(all_posts: list[dict], week_label: str) -> str:
 
 
 # ── Gmail 발송 ─────────────────────────────────────────────
-def send_email(subject: str, body: str, post_count: int):
+def build_table_html(all_posts: list[dict]) -> str:
+    site_groups = {}
+    for post in all_posts:
+        site = post["site"]
+        if site not in site_groups:
+            site_groups[site] = []
+        site_groups[site].append(post)
+
+    tables_html = ""
+    for site, posts in site_groups.items():
+        tables_html += f"""
+<h3 style="font-size:14px; font-weight:500; margin:28px 0 8px; color:#111; border-left:3px solid #1a73e8; padding-left:8px;">
+  {site} <span style="font-size:12px; color:#999; font-weight:400;">({len(posts)}건)</span>
+</h3>
+<table style="width:100%; border-collapse:collapse; font-size:12px;">
+  <thead>
+    <tr style="background:#f8f8f8;">
+      <th style="text-align:left; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:55%;">제목</th>
+      <th style="text-align:center; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:15%;">날짜</th>
+      <th style="text-align:center; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:10%;">조회</th>
+      <th style="text-align:center; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:10%;">댓글</th>
+    </tr>
+  </thead>
+  <tbody>"""
+        for post in posts:
+            title_html = (
+                f'<a href="{post["url"]}" style="color:#1a73e8; text-decoration:none;">{post["title"]}</a>'
+                if post["url"] else post["title"]
+            )
+            tables_html += f"""
+    <tr style="border-bottom:1px solid #f0f0f0;">
+      <td style="padding:7px 10px;">{title_html}</td>
+      <td style="padding:7px 10px; text-align:center; color:#666;">{post["date"]}</td>
+      <td style="padding:7px 10px; text-align:center; color:#666;">{post["view_count"]}</td>
+      <td style="padding:7px 10px; text-align:center; color:#666;">{post["reply_count"]}</td>
+    </tr>"""
+        tables_html += "</tbody></table>"
+    return tables_html
+
+
+def send_email(subject: str, body: str, post_count: int, all_posts: list[dict]):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = GMAIL_USER
     msg["To"]      = REPORT_TO
 
+    tables_html = build_table_html(all_posts)
+
     html = f"""
 <html>
-<body style="font-family:sans-serif; line-height:1.7; color:#333; max-width:680px; margin:0 auto; padding:24px;">
+<body style="font-family:sans-serif; line-height:1.7; color:#333; max-width:720px; margin:0 auto; padding:24px;">
   <h2 style="font-size:18px; font-weight:500; border-bottom:1px solid #eee; padding-bottom:12px;">{subject}</h2>
-  <p style="font-size:12px; color:#999; margin-bottom:20px;">총 {post_count}건 수집 · 디시인사이드(알뜰폰갤), 뽐뿌, FM코리아</p>
-  <div style="white-space:pre-wrap; font-size:14px; line-height:1.8;">{body}</div>
+  <p style="font-size:12px; color:#999; margin-bottom:20px;">총 {post_count}건 수집 · 검색어: 아이즈비전, 아이즈모바일</p>
+
+  <!-- AI 분석 리포트 -->
+  <div style="white-space:pre-wrap; font-size:14px; line-height:1.8; background:#fafafa; padding:16px 20px; border-radius:8px; border:1px solid #eee;">{body}</div>
+
+  <!-- 수집 게시글 목록 -->
+  <h2 style="font-size:16px; font-weight:500; margin-top:36px; margin-bottom:4px; border-bottom:1px solid #eee; padding-bottom:10px;">수집 게시글 목록</h2>
+  {tables_html}
+
   <hr style="border:none; border-top:1px solid #eee; margin-top:32px;">
   <p style="font-size:11px; color:#bbb;">IzsVision 커뮤니티 모니터링 · 매주 월요일 자동 발송</p>
 </body>
@@ -409,6 +456,7 @@ async def main():
         subject=f"[커뮤니티 모니터링] 아이즈비전 {week_label}",
         body=report,
         post_count=len(unique_posts),
+        all_posts=unique_posts,
     )
     print("[완료]")
 
