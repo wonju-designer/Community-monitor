@@ -38,7 +38,8 @@ def get_week_label():
 def is_within_week(date_str: str) -> bool:
     if not date_str:
         return True
-    since = datetime.date.today() - datetime.timedelta(days=7)
+    today = datetime.date.today()
+    since = today - datetime.timedelta(days=7)
     formats = [
         "%Y-%m-%d %H:%M:%S", "%Y-%m-%d",
         "%Y.%m.%d %H:%M:%S", "%Y.%m.%d",
@@ -46,10 +47,11 @@ def is_within_week(date_str: str) -> bool:
     ]
     for fmt in formats:
         try:
-            parsed = datetime.datetime.strptime(date_str.strip(), fmt)
+            parsed = datetime.datetime.strptime(date_str.strip()[:19], fmt)
             if fmt == "%m/%d":
-                parsed = parsed.replace(year=datetime.date.today().year)
-            return parsed.date() >= since
+                parsed = parsed.replace(year=today.year)
+            # since 이상 today 이하 (오늘 포함)
+            return since <= parsed.date() <= today
         except ValueError:
             continue
     return True
@@ -355,22 +357,34 @@ async def generate_report(all_posts: list[dict], week_label: str) -> str:
                     prompt += f"   댓글: {c}\n"
 
     prompt += """
-아래 형식으로 리포트를 작성해주세요:
+아래 형식으로 리포트를 작성해주세요.
+각 항목은 반드시 새 줄에서 시작하고, 항목 사이에 빈 줄을 넣어주세요.
 
-## 1. 이번 주 핵심 요약 (3줄 이내)
+## 1. 이번 주 핵심 요약
+(3줄 이내, 각 줄은 줄바꿈으로 구분)
 
 ## 2. 사이트별 언급 현황
+- 디시인사이드: X건 (주요 토픽)
+- 뽐뿌: X건 (주요 토픽)
+- FM코리아: X건 (주요 토픽)
 
 ## 3. 감성 분석
-- 긍정: X건
-- 부정: X건
+- 긍정: X건 (주요 내용)
+- 부정: X건 (주요 내용)
 - 중립: X건
 - 감성 점수: X/10
 
 ## 4. 주요 이슈 및 키워드
+- 이슈1
+- 이슈2
+- 이슈3
 
 ## 5. 대응 제언
+- 제언1
+- 제언2
+- 제언3
 
+각 ## 항목은 반드시 새 줄에서 시작하고 앞뒤로 빈 줄을 넣어주세요.
 한국어로 간결하게 작성해주세요."""
 
     headers = {
