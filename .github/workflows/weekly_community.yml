@@ -5,6 +5,9 @@ on:
     - cron: '0 0 * * 1'
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   community-monitor:
     runs-on: ubuntu-latest
@@ -21,13 +24,13 @@ jobs:
 
       - name: 의존성 설치
         run: |
-          pip install anthropic playwright
+          pip install httpx playwright
           playwright install chromium
           playwright install-deps chromium
 
       - name: 커뮤니티 수집 + 리포트 발송
         env:
-          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+          GEMINI_API_KEY:     ${{ secrets.GEMINI_API_KEY }}
           GMAIL_USER:         ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           REPORT_TO:          ${{ secrets.REPORT_TO }}
