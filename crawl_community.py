@@ -144,7 +144,7 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
 
 
 # ── 뽐뿌 ──────────────────────────────────────────────────
-PPOMPPU_SEARCH_KEYWORDS = ["아이즈비전", "아이즈모바일", "아이즈"]
+PPOMPPU_SEARCH_KEYWORDS = ["아이즈모바일", "아이즈"]
 _ppomppu_done = False
 
 async def crawl_ppomppu(page, keyword: str) -> list[dict]:
@@ -178,11 +178,6 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                     if not href:
                         continue
 
-                    # 커뮤니티(ppomppu) 게시판만 수집
-                    if "id=ppomppu" not in href and "id=phone" not in href and "id=freeboard" not in href:
-                        # id 파라미터가 없거나 다른 게시판이면 일단 포함 (커뮤니티 폭넓게)
-                        pass
-
                     full_url = f"https://www.ppomppu.co.kr{href}" if href.startswith("/") else href
 
                     if full_url in seen_urls:
@@ -198,6 +193,10 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                     }""", link)
                     title = title.strip()
                     if not title or len(title) < 2:
+                        continue
+
+                    # 제목에 아이즈 키워드 없으면 제외
+                    if not any(k in title for k in PPOMPPU_SEARCH_KEYWORDS):
                         continue
 
                     # 부모 tr에서 날짜/조회/댓글 추출
