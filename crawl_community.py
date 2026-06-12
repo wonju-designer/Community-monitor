@@ -163,11 +163,13 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
             url = f"https://www.ppomppu.co.kr/search_bbs.php?bbs_cate=&keyword={encoded}"
             print(f"    [뽐뿌] 검색: '{kw}' → {url}")
 
-            await page.goto(url, wait_until="networkidle", timeout=30000)
-            await asyncio.sleep(2)
+            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(3)
 
-            # href에 /zboard/view.php 포함된 링크 전체 수집
-            all_links = await page.query_selector_all("a[href*='/zboard/view.php']")
+            # 확인된 구조: <a href="/zboard/view.php?id=ppomppu&no=...">
+            all_links = await page.query_selector_all("a[href*='view.php?id=ppomppu']")
+            if not all_links:
+                all_links = await page.query_selector_all("a[href*='/zboard/view.php']")
             print(f"    [뽐뿌] '{kw}' 링크 {len(all_links)}개 발견")
 
             for link in all_links[:30]:
