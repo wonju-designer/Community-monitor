@@ -144,14 +144,24 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
 
 
 # ── 뽐뿌 ──────────────────────────────────────────────────
+PPOMPPU_KEYWORDS = ["아이즈비전", "아이즈모바일", "아이즈"]
+_ppomppu_done = False  # 중복 실행 방지
+
 async def crawl_ppomppu(page, keyword: str) -> list[dict]:
+    """휴대폰 포럼 7일치 수집 → 제목+본문에 아이즈 키워드 있는 것만 필터링"""
+    global _ppomppu_done
+    if _ppomppu_done:
+        return []
+    _ppomppu_done = True
+
     results = []
     try:
-        # 휴대폰 포럼 게시판 페이지별 수집 후 키워드 필터링
         base_url = "https://www.ppomppu.co.kr/zboard/zboard.php?id=phone&category=6&page={page}"
-        print(f"    [뽐뿌] 휴대폰 포럼에서 '{keyword}' 검색 중...")
+        print(f"    [뽐뿌] 휴대폰 포럼 7일치 수집 중 (키워드: {PPOMPPU_KEYWORDS})...")
 
-        for page_num in range(1, 4):  # 최대 3페이지
+        candidates = []
+
+        for page_num in range(1, 6):  # 최대 5페이지
             url = base_url.format(page=page_num)
             await page.goto(url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(1.5)
@@ -159,10 +169,9 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
             title_els = await page.query_selector_all("a.baseList-title")
             print(f"    [뽐뿌] {page_num}페이지 {len(title_els)}개 게시글 발견")
 
-            found_in_page = 0
+            page_has_recent = False
             for title_el in title_els:
                 try:
-                    # span 포함 전체 텍스트 추출
                     title = await page.evaluate("el => el.innerText || el.textContent", title_el)
                     title = title.strip() if title else ""
                     if not title:
@@ -171,7 +180,6 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                     href = await title_el.get_attribute("href")
                     full_url = f"https://www.ppomppu.co.kr/zboard/{href}" if href and not href.startswith("http") else (href or "")
 
-                    # 부모 행에서 날짜/조회/댓글 추출
                     row = await title_el.evaluate_handle("el => el.closest('tr')")
                     cells = await row.query_selector_all("td")
                     date_text  = (await cells[-2].inner_text()).strip() if len(cells) >= 2 else ""
@@ -179,37 +187,72 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                     reply_el   = await row.query_selector("span.baseList-replyCount, .replyNum")
                     reply_text = (await reply_el.inner_text()).strip().replace("[","").replace("]","") if reply_el else "0"
 
-                    results.append({
-                        "site": "뽐뿌",
+                    if not is_within_week(date_text):
+                        continue
+
+                    page_has_recent = True
+                    candidates.append({
                         "title": title,
                         "url": full_url,
                         "date": date_text,
                         "reply_count": reply_text,
                         "view_count": view_text,
-                        "comments": [],
                     })
-                    found_in_page += 1
                 except Exception:
                     continue
 
-            if found_in_page == 0 and page_num > 1:
-                break  # 더 이상 결과 없으면 중단
+            if not page_has_recent and page_num > 1:
+                print(f"    [뽐뿌] {page_num}페이지 이후 7일 이내 게시글 없음, 중단")
+                break
 
-        print(f"    [뽐뿌] '{keyword}' 결과: {len(results)}건")
+        print(f"    [뽐뿌] 7일 이내 후보: {len(candidates)}건, 제목+본문 키워드 확인 중...")
 
-        for item in results[:3]:
+        for item in candidates:
             try:
-                if not item["url"]:
+                # 1차: 제목에 키워드 확인
+                title_match = any(k in item["title"] for k in PPOMPPU_KEYWORDS)
+
+                # 2차: 본문에 키워드 확인 (제목 미매칭 시)
+                body_match = False
+                comments = []
+                if item["url"]:
+                    await page.goto(item["url"], wait_until="domcontentloaded", timeout=15000)
+                    await asyncio.sleep(1)
+
+                    if not title_match:
+                        body_el = await page.query_selector("div.tb-form, td.forum-content, .post_content, #div_content")
+                        if body_el:
+                            body_text = (await body_el.inner_text()).strip()
+                            body_match = any(k in body_text for k in PPOMPPU_KEYWORDS)
+
+                    # 댓글 수집
+                    comment_els = await page.query_selector_all("td.comment_contents, .comment_text")
+                    for c in comment_els[:10]:
+                        text = (await c.inner_text()).strip()
+                        if text:
+                            # 댓글에 키워드 있으면 body_match 처리
+                            if any(k in text for k in PPOMPPU_KEYWORDS):
+                                body_match = True
+                            comments.append(text[:200])
+
+                if not title_match and not body_match:
                     continue
-                await page.goto(item["url"], wait_until="domcontentloaded", timeout=15000)
-                await asyncio.sleep(1)
-                comment_els = await page.query_selector_all("td.comment_contents, .comment_text")
-                for c in comment_els[:10]:
-                    text = (await c.inner_text()).strip()
-                    if text:
-                        item["comments"].append(text[:200])
+
+                results.append({
+                    "site": "뽐뿌",
+                    "title": item["title"],
+                    "url": item["url"],
+                    "date": item["date"],
+                    "reply_count": item["reply_count"],
+                    "view_count": item["view_count"],
+                    "comments": comments,
+                })
+                print(f"    [뽐뿌] 매칭: {item['title'][:40]}...")
+
             except Exception:
                 continue
+
+        print(f"    [뽐뿌] 최종 결과: {len(results)}건")
 
     except Exception as e:
         print(f"    [뽐뿌] 오류: {e}")
