@@ -145,10 +145,10 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
 
 # ── 뽐뿌 ──────────────────────────────────────────────────
 PPOMPPU_SEARCH_KEYWORDS = ["아이즈비전", "아이즈모바일", "아이즈"]
-_ppomppu_done = False  # 중복 실행 방지
+_ppomppu_done = False
 
 async def crawl_ppomppu(page, keyword: str) -> list[dict]:
-    """뽐뿌 통합 검색 → 커뮤니티 섹션만 수집 → 7일 이내 필터링"""
+    """뽐뿌 통합검색 → 커뮤니티 결과만 수집 → 7일 이내 필터링"""
     global _ppomppu_done
     if _ppomppu_done:
         return []
@@ -159,61 +159,73 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
 
     try:
         for kw in PPOMPPU_SEARCH_KEYWORDS:
-            # EUC-KR 인코딩으로 검색 URL 생성
-            encoded = kw.encode("euc-kr")
-            from urllib.parse import quote as urlquote
-            encoded_str = urlquote(encoded)
-            url = f"https://www.ppomppu.co.kr/search_bbs.php?bbs_cate=&keyword={encoded_str}"
+            encoded = quote(kw.encode("euc-kr"))
+            url = f"https://www.ppomppu.co.kr/search_bbs.php?bbs_cate=&keyword={encoded}"
             print(f"    [뽐뿌] 검색: '{kw}' → {url}")
 
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            await page.goto(url, wait_until="networkidle", timeout=30000)
             await asyncio.sleep(2)
 
-            # 커뮤니티 섹션 게시글 추출
-            # 뽐뿌 검색결과 커뮤니티 섹션: table 내 tr 행
-            rows = await page.query_selector_all("tr.list0, tr.list1, tr.search-list")
-            if not rows:
-                rows = await page.query_selector_all("table.search_result tr, .bbs-list tr")
-            print(f"    [뽐뿌] '{kw}' 검색결과 {len(rows)}개 행 발견")
+            # href에 /zboard/view.php 포함된 링크 전체 수집
+            all_links = await page.query_selector_all("a[href*='/zboard/view.php']")
+            print(f"    [뽐뿌] '{kw}' 링크 {len(all_links)}개 발견")
 
-            for row in rows[:30]:
+            for link in all_links[:30]:
                 try:
-                    title_el = await row.query_selector("a.baseList-title, a.title, td.title a, .search-title a")
-                    if not title_el:
-                        links = await row.query_selector_all("a")
-                        for l in links:
-                            href = await l.get_attribute("href") or ""
-                            if "view.php" in href or "no=" in href:
-                                title_el = l
-                                break
-                    if not title_el:
+                    href = await link.get_attribute("href") or ""
+                    if not href:
                         continue
 
-                    title = await page.evaluate("el => el.innerText || el.textContent", title_el)
-                    title = title.strip() if title else ""
-                    if not title or len(title) < 2:
-                        continue
+                    # 커뮤니티(ppomppu) 게시판만 수집
+                    if "id=ppomppu" not in href and "id=phone" not in href and "id=freeboard" not in href:
+                        # id 파라미터가 없거나 다른 게시판이면 일단 포함 (커뮤니티 폭넓게)
+                        pass
 
-                    href = await title_el.get_attribute("href")
-                    full_url = f"https://www.ppomppu.co.kr/zboard/{href}" if href and not href.startswith("http") else (href or "")
+                    full_url = f"https://www.ppomppu.co.kr{href}" if href.startswith("/") else href
 
-                    # 중복 제거
                     if full_url in seen_urls:
                         continue
                     seen_urls.add(full_url)
 
-                    # 날짜: span 태그 직접 탐색
-                    date_el = await row.query_selector("td.baseList-space span, td.list_date span, span.date, td:nth-child(4) span")
-                    if date_el:
-                        date_text = (await date_el.inner_text()).strip()
-                    else:
-                        cells_all = await row.query_selector_all("td")
-                        date_text = (await cells_all[-2].inner_text()).strip() if len(cells_all) >= 2 else ""
+                    # 제목: font.comment-cnt(댓글수) 제외한 텍스트
+                    title = await page.evaluate("""el => {
+                        const clone = el.cloneNode(true);
+                        const font = clone.querySelector('font.comment-cnt');
+                        if (font) font.remove();
+                        return clone.innerText || clone.textContent || '';
+                    }""", link)
+                    title = title.strip()
+                    if not title or len(title) < 2:
+                        continue
 
+                    # 부모 tr에서 날짜/조회/댓글 추출
+                    row = await link.evaluate_handle("el => el.closest('tr') || el.parentElement")
+                    date_text = ""
+                    view_text = "0"
+                    reply_text = "0"
+
+                    # span 날짜 탐색
+                    date_el = await row.query_selector("span")
+                    if date_el:
+                        date_candidate = (await date_el.inner_text()).strip()
+                        if "." in date_candidate or "-" in date_candidate:
+                            date_text = date_candidate
+
+                    # td 전체에서 날짜/조회 추출
                     cells = await row.query_selector_all("td")
-                    view_text  = (await cells[-1].inner_text()).strip() if len(cells) >= 1 else "0"
-                    reply_el   = await row.query_selector("span.baseList-replyCount, .replyNum, .reply")
-                    reply_text = (await reply_el.inner_text()).strip().replace("[","").replace("]","") if reply_el else "0"
+                    if not date_text and len(cells) >= 2:
+                        for cell in cells:
+                            cell_text = (await cell.inner_text()).strip()
+                            if "." in cell_text and len(cell_text) <= 12:
+                                date_text = cell_text
+                                break
+                    if len(cells) >= 1:
+                        view_text = (await cells[-1].inner_text()).strip()
+
+                    # 댓글수: font.comment-cnt
+                    reply_el = await link.query_selector("font.comment-cnt")
+                    if reply_el:
+                        reply_text = (await reply_el.inner_text()).strip()
 
                     # 7일 이내만 포함
                     if not is_within_week(date_text):
@@ -228,6 +240,8 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                         "view_count": view_text,
                         "comments": [],
                     })
+                    print(f"    [뽐뿌] 수집: {title[:40]}...")
+
                 except Exception:
                     continue
 
@@ -235,7 +249,7 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
 
         print(f"    [뽐뿌] 최종 결과: {len(results)}건")
 
-        # 상위 3개 게시글 댓글 수집
+        # 상위 3개 댓글 수집
         for item in results[:3]:
             try:
                 if not item["url"]:
