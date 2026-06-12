@@ -99,6 +99,11 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
                 if not is_within_week(date_text):
                     continue
 
+                # 아이즈 키워드 없는 게시글 제외
+                keywords_check = ["아이즈모바일", "아이즈"]
+                if not any(k in title for k in keywords_check):
+                    continue
+
                 results.append({
                     "site": "디시인사이드(알뜰폰갤)",
                     "title": title,
