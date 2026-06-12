@@ -46,6 +46,7 @@ def is_within_week(date_str: str) -> bool:
     formats = [
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%d",
+        "%Y.%m.%d %H:%M:%S",
         "%Y.%m.%d",
         "%y/%m/%d",
         "%m/%d",
@@ -90,11 +91,17 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
                     continue
                 href = await title_el.get_attribute("href")
 
-                date_el  = await row.query_selector("td.gall_date")
+                date_el  = await row.query_selector("td.gall_date, span.gall_date")
                 reply_el = await row.query_selector("td.gall_reply_num, .gall_comment")
                 view_el  = await row.query_selector("td.gall_count")
 
-                date_text  = (await date_el.get_attribute("title") or await date_el.inner_text()).strip() if date_el else ""
+                if date_el:
+                    date_text = await date_el.get_attribute("title") or ""
+                    if not date_text:
+                        date_text = (await date_el.inner_text()).strip()
+                    date_text = date_text.strip()
+                else:
+                    date_text = ""
                 reply_text = (await reply_el.inner_text()).strip() if reply_el else "0"
                 view_text  = (await view_el.inner_text()).strip() if view_el else "0"
                 full_url   = f"https://gall.dcinside.com{href}" if href and href.startswith("/") else (href or "")
