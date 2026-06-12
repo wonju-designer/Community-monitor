@@ -33,6 +33,34 @@ def get_week_label():
     week_num = (monday.day - 1) // 7 + 1
     return f"{today.year}년 {today.month}월 {week_num}주차 ({monday.month}/{monday.day} – {sunday.month}/{sunday.day})"
 
+def get_since_date():
+    """7일 전 날짜 반환"""
+    return datetime.date.today() - datetime.timedelta(days=7)
+
+def is_within_week(date_str: str) -> bool:
+    """날짜 문자열이 최근 7일 이내인지 확인"""
+    if not date_str:
+        return True  # 날짜 없으면 포함
+    since = get_since_date()
+    # 다양한 날짜 형식 파싱
+    formats = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+        "%Y.%m.%d",
+        "%y/%m/%d",
+        "%m/%d",
+    ]
+    for fmt in formats:
+        try:
+            parsed = datetime.datetime.strptime(date_str.strip(), fmt)
+            # 연도 없는 형식 처리 (MM/DD)
+            if fmt == "%m/%d":
+                parsed = parsed.replace(year=datetime.date.today().year)
+            return parsed.date() >= since
+        except ValueError:
+            continue
+    return True  # 파싱 실패시 포함
+
 
 # ── 디시인사이드 알뜰폰 갤러리 ────────────────────────────
 async def crawl_dcinside(page, keyword: str) -> list[dict]:
@@ -70,6 +98,15 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
                 reply_text = (await reply_el.inner_text()).strip() if reply_el else "0"
                 view_text  = (await view_el.inner_text()).strip() if view_el else "0"
                 full_url   = f"https://gall.dcinside.com{href}" if href and href.startswith("/") else (href or "")
+
+                # 키워드 관련 게시글만 포함
+                all_keywords = ["아이즈비전", "아이즈모바일", "아이즈", "eyesvision", "izsvision"]
+                if not any(k.lower() in title.lower() for k in all_keywords):
+                    continue
+
+                # 7일 이내 게시글만 포함
+                if not is_within_week(date_text):
+                    continue
 
                 results.append({
                     "site": "디시인사이드(알뜰폰갤)",
@@ -123,8 +160,12 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
             found_in_page = 0
             for title_el in title_els:
                 try:
-                    title = (await title_el.inner_text()).strip()
-                    if not title or keyword not in title:
+                    # span 포함 전체 텍스트 추출
+                    title = await page.evaluate("el => el.innerText || el.textContent", title_el)
+                    title = title.strip() if title else ""
+                    # 키워드 부분 매칭 (아이즈비전, 아이즈모바일, 아이즈 모두 포함)
+                    keyword_variants = [keyword, "아이즈"]
+                    if not title or not any(k in title for k in keyword_variants):
                         continue
 
                     href = await title_el.get_attribute("href")
@@ -212,6 +253,10 @@ async def crawl_fmkorea(page, keyword: str) -> list[dict]:
                 date_text  = (await date_el.inner_text()).strip()  if date_el  else ""
                 reply_text = (await reply_el.inner_text()).strip() if reply_el else "0"
                 view_text  = (await view_el.inner_text()).strip()  if view_el  else "0"
+
+                # 7일 이내 게시글만 포함
+                if not is_within_week(date_text):
+                    continue
 
                 results.append({
                     "site": "FM코리아",
