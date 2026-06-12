@@ -106,11 +106,6 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
                 view_text  = (await view_el.inner_text()).strip() if view_el else "0"
                 full_url   = f"https://gall.dcinside.com{href}" if href and href.startswith("/") else (href or "")
 
-                # 키워드 관련 게시글만 포함
-                all_keywords = ["아이즈비전", "아이즈모바일", "아이즈", "eyesvision", "izsvision"]
-                if not any(k.lower() in title.lower() for k in all_keywords):
-                    continue
-
                 # 7일 이내 게시글만 포함
                 if not is_within_week(date_text):
                     continue
@@ -170,9 +165,7 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                     # span 포함 전체 텍스트 추출
                     title = await page.evaluate("el => el.innerText || el.textContent", title_el)
                     title = title.strip() if title else ""
-                    # 키워드 부분 매칭 (아이즈비전, 아이즈모바일, 아이즈 모두 포함)
-                    keyword_variants = [keyword, "아이즈"]
-                    if not title or not any(k in title for k in keyword_variants):
+                    if not title:
                         continue
 
                     href = await title_el.get_attribute("href")
@@ -311,10 +304,11 @@ async def analyze_and_report(all_posts: list[dict], week_label: str) -> str:
         site_summary[site].append(post)
 
     prompt = f"""당신은 브랜드 평판 분석 전문가입니다.
-아래는 이번 주 커뮤니티에서 수집된 '아이즈비전(아이즈모바일)' 관련 게시글 및 댓글 데이터입니다.
+아래는 이번 주 알뜰폰 커뮤니티에서 수집된 게시글 및 댓글 데이터입니다.
+아이즈비전(아이즈모바일)을 직접 언급하지 않더라도 알뜰폰 시장 전반의 여론, 경쟁사 동향, 고객 불만 등 아이즈비전과 관련될 수 있는 내용을 분석해주세요.
 
 기간: {week_label}
-총 언급 수: {len(all_posts)}건
+총 수집 게시글: {len(all_posts)}건
 
 """
     for site, posts in site_summary.items():
@@ -334,18 +328,21 @@ async def analyze_and_report(all_posts: list[dict], week_label: str) -> str:
 ## 1. 이번 주 핵심 요약
 (3줄 이내)
 
-## 2. 사이트별 언급 현황
-(각 사이트별 언급 수, 주요 토픽)
+## 2. 아이즈비전 직접 언급
+(아이즈비전/아이즈모바일을 직접 언급한 게시글 요약)
 
-## 3. 감성 분석
+## 3. 알뜰폰 시장 여론 (간접 관련)
+(직접 언급은 없지만 아이즈비전에 영향을 줄 수 있는 시장 트렌드, 경쟁사 이슈, 고객 불만 등)
+
+## 4. 감성 분석 (아이즈비전 직접 언급 기준)
 - 긍정: X건
 - 부정: X건
 - 중립: X건
 - 전반적 감성 점수: X/10
 
-## 4. 주요 이슈 및 키워드
+## 5. 주요 이슈 및 키워드
 
-## 5. 대응 제언
+## 6. 대응 제언
 
 한국어로 간결하게 작성해주세요."""
 
