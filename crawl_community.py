@@ -19,7 +19,7 @@ import httpx
 from playwright.async_api import async_playwright
 
 # ── 환경 변수 ──────────────────────────────────────────────
-GEMINI_API_KEY     = os.environ["GEMINI_API_KEY"]
+GROQ_API_KEY       = os.environ["GROQ_API_KEY"]
 GMAIL_USER         = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 REPORT_TO          = os.environ["REPORT_TO"]
@@ -248,7 +248,7 @@ async def crawl_fmkorea(page, keyword: str) -> list[dict]:
     return results
 
 
-# ── Gemini로 감성 분석 + 리포트 생성 ──────────────────────
+# ── Groq로 감성 분석 + 리포트 생성 ──────────────────────
 async def analyze_and_report(all_posts: list[dict], week_label: str) -> str:
     if not all_posts:
         return "이번 주 수집된 언급 데이터가 없습니다."
@@ -299,16 +299,28 @@ async def analyze_and_report(all_posts: list[dict], week_label: str) -> str:
 
 한국어로 간결하게 작성해주세요."""
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 2000,
+        "temperature": 0.3,
+    }
 
     async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.post(url, json=payload)
+        resp = await client.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+        )
         if resp.status_code != 200:
-            print(f"[Gemini] 오류: {resp.status_code} {resp.text}")
-            return f"리포트 생성 실패 (Gemini API 오류: {resp.status_code})"
+            print(f"[Groq] 오류: {resp.status_code} {resp.text}")
+            return f"리포트 생성 실패 (Groq API 오류: {resp.status_code})"
         data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        return data["choices"][0]["message"]["content"]
 
 
 # ── Gmail 발송 ─────────────────────────────────────────────
@@ -388,7 +400,7 @@ async def main():
 
     print(f"\n[수집 완료] 총 {len(unique_posts)}건 (중복 제거 후)")
 
-    print("[분석] Gemini 감성 분석 + 리포트 생성 중...")
+    print("[분석] Groq 감성 분석 + 리포트 생성 중...")
     report = await analyze_and_report(unique_posts, week_label)
     print(report)
 
