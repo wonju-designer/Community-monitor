@@ -228,8 +228,9 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                     if reply_el:
                         reply_text = (await reply_el.inner_text()).strip()
 
-                    # 7일 이내만 포함
-                    if not is_within_week(date_text):
+                    # 7일 이내만 포함 (날짜 파싱 실패 시 포함)
+                    if date_text and not is_within_week(date_text):
+                        print(f"    [뽐뿌] 날짜 필터 탈락: {date_text} / {title[:20]}")
                         continue
 
                     results.append({
