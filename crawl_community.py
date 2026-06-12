@@ -15,6 +15,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import quote
 
+import re
 import httpx
 from playwright.async_api import async_playwright
 
@@ -177,7 +178,7 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
             all_links = await page.query_selector_all("a[href*='view.php?id=ppomppu']")
             print(f"    [뽐뿌] '{kw}' 링크 {len(all_links)}개 발견")
 
-            # no= 기준으로 첫 번째 링크(제목)만 수집
+            # no= 기준으로 중복 제거하며 수집
             for link in all_links:
                 try:
                     href = await link.get_attribute("href") or ""
@@ -185,7 +186,6 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                         continue
 
                     # no= 파라미터 추출
-                    import re
                     no_match = re.search(r"no=(\d+)", href)
                     if not no_match:
                         continue
@@ -194,8 +194,9 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                     # 중복 제거
                     if no in seen_nos:
                         continue
+                    seen_nos.add(no)
 
-                    # 제목 추출 (font.comment-cnt 제외)
+                    # 제목 추출 (font.comment-cnt, b태그 포함 전체 텍스트, 댓글수 제외)
                     title = await page.evaluate("""el => {
                         const clone = el.cloneNode(true);
                         const font = clone.querySelector('font.comment-cnt');
@@ -204,44 +205,52 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                     }""", link)
                     title = title.strip()
 
-                    # 본문 미리보기(짧은 텍스트) 제외, 실제 제목만
                     if not title or len(title) < 5:
                         continue
 
-                    # 키워드 확인
-                    title_clean = title.replace("[","").replace("]","")
-                    if not any(k in title_clean for k in PPOMPPU_SEARCH_KEYWORDS):
+                    # 키워드 확인 (b태그 안에 있으므로 그냥 포함 여부 체크)
+                    if not any(k in title for k in PPOMPPU_SEARCH_KEYWORDS):
                         continue
 
-                    seen_nos.add(no)
+                    # keyword 파라미터 제거한 클린 URL
                     full_url = f"https://www.ppomppu.co.kr{href.split('&keyword')[0]}"
-
-                    # 날짜/조회수: 부모 요소 텍스트에서 파싱
-                    # 형태: "뽐뿌게시판] 조회수: 7254 | 2026.06.09 | 1 | 0"
-                    parent = await link.evaluate_handle("el => el.closest('li') || el.closest('div') || el.parentElement")
-                    parent_text = await page.evaluate("el => el.innerText || el.textContent || ''", parent)
 
                     date_text = ""
                     view_text = "0"
                     reply_text = "0"
 
-                    # 날짜 파싱: YYYY.MM.DD 패턴
-                    date_match = re.search(r"(\d{4}\.\d{2}\.\d{2})", parent_text)
-                    if date_match:
-                        date_text = date_match.group(1)
+                    # 날짜: 링크 인근 span 태그에서 직접 추출
+                    # 확인된 구조: <span>2026.06.01</span>
+                    row = await link.evaluate_handle("el => el.closest('tr') || el.closest('li') || el.parentElement")
 
-                    # 조회수 파싱
-                    view_match = re.search(r"조회수[:\s]*(\d+)", parent_text)
-                    if view_match:
-                        view_text = view_match.group(1)
+                    # span 전체에서 날짜 패턴 찾기
+                    spans = await row.query_selector_all("span")
+                    for span in spans:
+                        span_text = (await span.inner_text()).strip()
+                        if re.match(r"\d{4}\.\d{2}\.\d{2}", span_text):
+                            date_text = span_text[:10]
+                            break
+
+                    # span에서 못 찾으면 전체 텍스트에서 정규식
+                    if not date_text:
+                        row_text = await page.evaluate("el => el.innerText || el.textContent || ''", row)
+                        date_match = re.search(r"(\d{4}\.\d{2}\.\d{2})", row_text)
+                        if date_match:
+                            date_text = date_match.group(1)
+                        view_match = re.search(r"조회수[:\s]*(\d+)", row_text)
+                        if view_match:
+                            view_text = view_match.group(1)
 
                     # 댓글수: font.comment-cnt
                     reply_el = await link.query_selector("font.comment-cnt")
                     if reply_el:
                         reply_text = (await reply_el.inner_text()).strip()
 
+                    print(f"    [뽐뿌] 날짜확인: [{date_text}] / {title[:20]}")
+
                     # 7일 이내만 포함
                     if date_text and not is_within_week(date_text):
+                        print(f"    [뽐뿌] 날짜 탈락: {date_text}")
                         continue
 
                     results.append({
