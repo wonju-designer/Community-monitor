@@ -3,7 +3,7 @@
 - 디시인사이드 알뜰폰 마이너 갤러리
 - 뽐뿌 휴대폰 포럼
 - FM코리아 검색
-- 리포트 생성: Google Gemini API (무료)
+- 리포트 생성: Gemini API
 - 발송: Gmail SMTP
 """
 
@@ -11,7 +11,6 @@ import os
 import asyncio
 import datetime
 import smtplib
-import json
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import quote
@@ -55,7 +54,6 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
                 notice = await row.get_attribute("class")
                 if notice and "notice" in notice:
                     continue
-
                 title_el = await row.query_selector("td.gall_tit a:first-child, .gall_tit a")
                 if not title_el:
                     continue
@@ -71,8 +69,7 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
                 date_text  = (await date_el.get_attribute("title") or await date_el.inner_text()).strip() if date_el else ""
                 reply_text = (await reply_el.inner_text()).strip() if reply_el else "0"
                 view_text  = (await view_el.inner_text()).strip() if view_el else "0"
-
-                full_url = f"https://gall.dcinside.com{href}" if href and href.startswith("/") else (href or "")
+                full_url   = f"https://gall.dcinside.com{href}" if href and href.startswith("/") else (href or "")
 
                 results.append({
                     "site": "디시인사이드(알뜰폰갤)",
@@ -139,11 +136,10 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                 href = await title_el.get_attribute("href")
 
                 cells = await row.query_selector_all("td")
-                date_text = (await cells[-2].inner_text()).strip() if len(cells) >= 2 else ""
-                view_text = (await cells[-1].inner_text()).strip() if len(cells) >= 1 else "0"
+                date_text  = (await cells[-2].inner_text()).strip() if len(cells) >= 2 else ""
+                view_text  = (await cells[-1].inner_text()).strip() if len(cells) >= 1 else "0"
                 reply_text = "0"
-
-                reply_el = await row.query_selector(".replyNum, .comment, span.replyCount")
+                reply_el   = await row.query_selector(".replyNum, .comment, span.replyCount")
                 if reply_el:
                     reply_text = (await reply_el.inner_text()).strip().replace("[","").replace("]","")
 
@@ -217,8 +213,7 @@ async def crawl_fmkorea(page, keyword: str) -> list[dict]:
                 date_text  = (await date_el.inner_text()).strip()  if date_el  else ""
                 reply_text = (await reply_el.inner_text()).strip() if reply_el else "0"
                 view_text  = (await view_el.inner_text()).strip()  if view_el  else "0"
-
-                full_url = f"https://www.fmkorea.com{href}" if href and href.startswith("/") else (href or "")
+                full_url   = f"https://www.fmkorea.com{href}" if href and href.startswith("/") else (href or "")
 
                 results.append({
                     "site": "FM코리아",
@@ -277,9 +272,7 @@ async def analyze_and_report(all_posts: list[dict], week_label: str) -> str:
         for i, p in enumerate(posts, 1):
             prompt += f"\n{i}. [{p['date']}] {p['title']}\n"
             prompt += f"   조회 {p['view_count']} | 댓글 {p['reply_count']}\n"
-            if p["url"]:
-                prompt += f"   URL: {p['url']}\n"
-            if p["comments"]:
+            if p.get("comments"):
                 prompt += "   주요 댓글:\n"
                 for c in p["comments"]:
                     prompt += f"   - {c}\n"
@@ -307,9 +300,7 @@ async def analyze_and_report(all_posts: list[dict], week_label: str) -> str:
 한국어로 간결하게 작성해주세요."""
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
-    }
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
     async with httpx.AsyncClient(timeout=60) as client:
         resp = await client.post(url, json=payload)
@@ -334,7 +325,7 @@ def send_email(subject: str, body: str, post_count: int):
   <p style="font-size:12px; color:#999; margin-bottom:20px;">총 {post_count}건 수집 · 디시인사이드(알뜰폰갤), 뽐뿌, FM코리아</p>
   <div style="white-space:pre-wrap; font-size:14px; line-height:1.8;">{body}</div>
   <hr style="border:none; border-top:1px solid #eee; margin-top:32px;">
-  <p style="font-size:11px; color:#bbb;">IzsVision 커뮤니티 모니터링 · 자동 발송</p>
+  <p style="font-size:11px; color:#bbb;">IzsVision 커뮤니티 모니터링 · 매주 월요일 자동 발송</p>
 </body>
 </html>"""
 
