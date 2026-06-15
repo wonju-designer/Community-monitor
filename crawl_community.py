@@ -374,7 +374,7 @@ async def crawl_naver(keyword: str) -> dict:
             try:
                 resp = await client.get(url, headers=headers, params={
                     "query": keyword,
-                    "display": 10,
+                    "display": 100,  # 최대 100개 수집
                     "sort": "date",
                 })
                 if resp.status_code != 200:
