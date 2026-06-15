@@ -404,7 +404,7 @@ async def crawl_naver(keyword: str) -> dict:
                     desc  = re.sub(r'<[^>]+>', '', item.get("description", "")).strip()
 
                     # 제목 또는 설명에 정확한 키워드 포함 여부 확인
-                    filter_keywords = ["아이즈모바일", "아이즈비전", "izsvision"]
+                    filter_keywords = ["아이즈모바일"]
                     combined_text = title + " " + desc
                     if not any(k in combined_text for k in filter_keywords):
                         continue
@@ -621,6 +621,44 @@ def format_report_html(report: str) -> str:
     return "\n".join(html_parts)
 
 
+def build_competitor_table_html(competitor_posts: dict) -> str:
+    """경쟁사 수집 결과 HTML 표 생성"""
+    if not competitor_posts:
+        return ""
+    html = ""
+    for brand, posts in competitor_posts.items():
+        if not posts:
+            continue
+        posts_sorted = sorted(posts, key=lambda x: parse_date_for_sort(x["date"]), reverse=True)
+        html += f"""
+<h3 style="font-size:14px; font-weight:500; margin:20px 0 8px; color:#111;
+  border-left:3px solid #f6ad55; padding-left:8px;">
+  {brand} <span style="font-size:12px; color:#999; font-weight:400;">({len(posts)}건)</span>
+</h3>
+<table style="width:100%; border-collapse:collapse; font-size:12px;">
+  <thead>
+    <tr style="background:#f8f8f8;">
+      <th style="text-align:left; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:60%;">제목</th>
+      <th style="text-align:center; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:20%;">날짜</th>
+      <th style="text-align:center; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:10%;">조회</th>
+    </tr>
+  </thead>
+  <tbody>"""
+        for post in posts_sorted:
+            title_html = (
+                f'<a href="{post["url"]}" style="color:#1a73e8; text-decoration:none;">{post["title"]}</a>'
+                if post.get("url") else post["title"]
+            )
+            html += f"""
+    <tr style="border-bottom:1px solid #f0f0f0;">
+      <td style="padding:7px 10px;">{title_html}</td>
+      <td style="padding:7px 10px; text-align:center; color:#666;">{post["date"]}</td>
+      <td style="padding:7px 10px; text-align:center; color:#666;">{post.get("view_count","")}</td>
+    </tr>"""
+        html += "</tbody></table>"
+    return html
+
+
 def build_naver_table_html(naver_data: dict) -> str:
     """네이버 수집 결과 HTML 표 생성"""
     type_names = {"blog": "블로그", "cafe": "카페"}
@@ -658,31 +696,34 @@ def build_naver_table_html(naver_data: dict) -> str:
     return html
 
 
-def send_email(subject: str, report: str, all_posts: list[dict], naver_data: dict = None):
+def send_email(subject: str, report: str, all_posts: list[dict], naver_data: dict = None, competitor_posts: dict = None):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = GMAIL_USER
     msg["To"]      = REPORT_TO
 
-    tables_html  = build_table_html(all_posts)
-    report_html  = format_report_html(report)
-    naver_html   = build_naver_table_html(naver_data) if naver_data else ""
-    naver_total  = sum(len(v) for v in naver_data.values()) if naver_data else 0
+    tables_html      = build_table_html(all_posts)
+    report_html      = format_report_html(report)
+    naver_html       = build_naver_table_html(naver_data) if naver_data else ""
+    competitor_html  = build_competitor_table_html(competitor_posts) if competitor_posts else ""
+    naver_total      = sum(len(v) for v in naver_data.values()) if naver_data else 0
+    competitor_total = sum(len(v) for v in competitor_posts.values()) if competitor_posts else 0
 
     html = f"""
 <html>
 <body style="font-family:sans-serif; line-height:1.7; color:#333; max-width:720px; margin:0 auto; padding:24px;">
   <h2 style="font-size:18px; font-weight:500; border-bottom:1px solid #eee; padding-bottom:12px;">{subject}</h2>
   <p style="font-size:12px; color:#999; margin-bottom:20px;">
-    커뮤니티 {len(all_posts)}건 · 네이버 {naver_total}건 수집 · 검색어: 아이즈모바일, 아이즈
+    커뮤니티 {len(all_posts)}건 · 경쟁사 {competitor_total}건 · 네이버 {naver_total}건 수집
   </p>
   <div style="font-size:14px; line-height:1.8; border:1px solid #eee; border-radius:8px; padding:8px 0; margin-bottom:8px;">
     {report_html}
   </div>
   <h2 style="font-size:16px; font-weight:500; margin-top:36px; margin-bottom:4px;
-    border-bottom:1px solid #eee; padding-bottom:10px;">커뮤니티 수집 게시글 목록</h2>
+    border-bottom:1px solid #eee; padding-bottom:10px;">아이즈모바일 수집 게시글</h2>
   {tables_html}
-  {f'<h2 style="font-size:16px; font-weight:500; margin-top:36px; margin-bottom:4px; border-bottom:1px solid #eee; padding-bottom:10px;">네이버 수집 목록</h2>' + naver_html if naver_html else ""}
+  {'<h2 style="font-size:16px; font-weight:500; margin-top:36px; margin-bottom:4px; border-bottom:1px solid #eee; padding-bottom:10px;">경쟁사 수집 게시글</h2>' + competitor_html if competitor_html else ""}
+  {'<h2 style="font-size:16px; font-weight:500; margin-top:36px; margin-bottom:4px; border-bottom:1px solid #eee; padding-bottom:10px;">네이버 수집 목록</h2>' + naver_html if naver_html else ""}
   <hr style="border:none; border-top:1px solid #eee; margin-top:32px;">
   <p style="font-size:11px; color:#bbb;">아이즈모바일 · 커뮤니티 모니터링 · 매주 월요일 자동 발송</p>
 </body>
@@ -777,7 +818,7 @@ async def main():
     # 네이버 수집 (정확한 키워드만 사용)
     print("\n[네이버] 수집 중...")
     naver_data = {"blog": [], "cafe": []}
-    NAVER_KEYWORDS = ["아이즈모바일", "아이즈비전"]
+    NAVER_KEYWORDS = ["아이즈모바일"]
     for kw in NAVER_KEYWORDS:
         naver_result = await crawl_naver(kw)
         for api_type in naver_data:
@@ -804,6 +845,7 @@ async def main():
         report=report,
         all_posts=unique_posts,
         naver_data=naver_data,
+        competitor_posts=competitor_posts,
     )
     print("[완료]")
 
