@@ -529,7 +529,7 @@ def send_email(subject: str, report: str, all_posts: list[dict]):
     border-bottom:1px solid #eee; padding-bottom:10px;">수집 게시글 목록</h2>
   {tables_html}
   <hr style="border:none; border-top:1px solid #eee; margin-top:32px;">
-  <p style="font-size:11px; color:#bbb;">IzsVision 커뮤니티 모니터링 · 매주 월요일 자동 발송</p>
+  <p style="font-size:11px; color:#bbb;">아이즈모바일 · 커뮤니티 모니터링 · 매주 월요일 자동 발송</p>
 </body>
 </html>"""
 
