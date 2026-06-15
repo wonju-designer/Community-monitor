@@ -9,6 +9,7 @@
 
 import os
 import re
+import json
 import asyncio
 import datetime
 import smtplib
@@ -833,6 +834,62 @@ async def main():
             fmkorea = await crawl_fmkorea(page, keyword)
             all_posts.extend(fmkorea)
             await asyncio.sleep(2)
+
+    # 경쟁사 수집 (브라우저 닫기 전)
+    competitor_posts = {}
+    for brand, keywords in COMPETITOR_KEYWORDS.items():
+        brand_posts = []
+        for kw in keywords:
+            print(f"\n[경쟁사] {brand} - {kw} 수집 중...")
+            results = []
+            try:
+                encoded = quote(kw)
+                comp_url = f"https://gall.dcinside.com/mgallery/board/lists?id=mvnogallery&s_type=search_subject_memo&s_keyword={encoded}"
+                await page.goto(comp_url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(2)
+
+                rows = await page.query_selector_all("tr.ub-content")
+                if not rows:
+                    rows = await page.query_selector_all("tbody tr")
+
+                for row in rows[:30]:
+                    try:
+                        notice = await row.get_attribute("class") or ""
+                        if "notice" in notice:
+                            continue
+                        title_el = await row.query_selector("td.gall_tit a:first-child, .gall_tit a")
+                        if not title_el:
+                            continue
+                        title = (await title_el.inner_text()).strip()
+                        if not title or len(title) < 2:
+                            continue
+                        if kw not in title:
+                            continue
+                        date_el = await row.query_selector("td.gall_date, span.gall_date")
+                        date_text = (await date_el.get_attribute("title") or await date_el.inner_text()).strip() if date_el else ""
+                        if not is_within_week(date_text):
+                            continue
+                        view_el = await row.query_selector("td.gall_count")
+                        view_text = (await view_el.inner_text()).strip() if view_el else "0"
+                        href = await title_el.get_attribute("href") or ""
+                        full_url = f"https://gall.dcinside.com{href}" if href.startswith("/") else href
+                        results.append({
+                            "site": "디시인사이드",
+                            "title": title,
+                            "url": full_url,
+                            "date": date_text,
+                            "view_count": view_text,
+                            "reply_count": "",
+                            "comments": [],
+                        })
+                    except Exception:
+                        continue
+            except Exception as e:
+                print(f"    [경쟁사 디시] 오류: {e}")
+            brand_posts.extend(results)
+            await asyncio.sleep(1)
+        competitor_posts[brand] = brand_posts
+        print(f"    [{brand}] {len(brand_posts)}건 수집")
 
         await browser.close()
 
