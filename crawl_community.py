@@ -20,10 +20,12 @@ import httpx
 from playwright.async_api import async_playwright
 
 # ── 환경 변수 ──────────────────────────────────────────────
-GROQ_API_KEY       = os.environ["GROQ_API_KEY"]
-GMAIL_USER         = os.environ["GMAIL_USER"]
-GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
-REPORT_TO          = os.environ["REPORT_TO"]
+GROQ_API_KEY          = os.environ["GROQ_API_KEY"]
+GMAIL_USER            = os.environ["GMAIL_USER"]
+GMAIL_APP_PASSWORD    = os.environ["GMAIL_APP_PASSWORD"]
+REPORT_TO             = os.environ["REPORT_TO"]
+NAVER_CLIENT_ID       = os.environ["NAVER_CLIENT_ID"]
+NAVER_CLIENT_SECRET   = os.environ["NAVER_CLIENT_SECRET"]
 
 # 아이즈모바일 키워드
 IZSVISION_KEYWORDS = ["아이즈모바일", "아이즈"]
@@ -349,8 +351,75 @@ async def crawl_fmkorea(page, keyword: str) -> list[dict]:
     return results
 
 
+
+# ── 네이버 검색 API 수집 ───────────────────────────────────
+async def crawl_naver(keyword: str) -> dict:
+    """네이버 블로그/카페/뉴스 수집"""
+    results = {"blog": [], "cafe": [], "news": []}
+
+    apis = {
+        "blog": "https://openapi.naver.com/v1/search/blog.json",
+        "cafe": "https://openapi.naver.com/v1/search/cafearticle.json",
+    }
+
+    headers = {
+        "X-Naver-Client-Id": NAVER_CLIENT_ID,
+        "X-Naver-Client-Secret": NAVER_CLIENT_SECRET,
+    }
+
+    since = datetime.date.today() - datetime.timedelta(days=7)
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        for api_type, url in apis.items():
+            try:
+                resp = await client.get(url, headers=headers, params={
+                    "query": keyword,
+                    "display": 10,
+                    "sort": "date",
+                })
+                if resp.status_code != 200:
+                    print(f"    [네이버 {api_type}] 오류: {resp.status_code}")
+                    continue
+
+                items = resp.json().get("items", [])
+                for item in items:
+                    # 날짜 파싱
+                    pub_date = item.get("pubDate", "") or item.get("postdate", "")
+                    try:
+                        if "," in pub_date:
+                            parsed = datetime.datetime.strptime(pub_date.strip(), "%a, %d %b %Y %H:%M:%S %z")
+                            item_date = parsed.date()
+                        elif len(pub_date) == 8:
+                            item_date = datetime.datetime.strptime(pub_date, "%Y%m%d").date()
+                        else:
+                            item_date = datetime.date.today()
+                    except Exception:
+                        item_date = datetime.date.today()
+
+                    if item_date < since:
+                        continue
+
+                    # HTML 태그 제거
+                    title = re.sub(r'<[^>]+>', '', item.get("title", "")).strip()
+                    desc  = re.sub(r'<[^>]+>', '', item.get("description", "")).strip()
+
+                    results[api_type].append({
+                        "title": title,
+                        "description": desc[:200],
+                        "url": item.get("link", "") or item.get("url", ""),
+                        "date": str(item_date),
+                        "source": item.get("bloggername", "") or item.get("cafename", "") or item.get("originallink", ""),
+                    })
+
+                print(f"    [네이버 {api_type}] '{keyword}' {len(results[api_type])}건")
+
+            except Exception as e:
+                print(f"    [네이버 {api_type}] 오류: {e}")
+
+    return results
+
 # ── Groq 리포트 생성 ───────────────────────────────────────
-async def generate_report(all_posts: list[dict], week_label: str, competitor_posts: dict = None) -> str:
+async def generate_report(all_posts: list[dict], week_label: str, competitor_posts: dict = None, naver_data: dict = None) -> str:
     if not all_posts:
         return "이번 주 수집된 언급 데이터가 없습니다."
 
@@ -385,6 +454,20 @@ async def generate_report(all_posts: list[dict], week_label: str, competitor_pos
                 for i, p in enumerate(posts[:5], 1):
                     prompt += f"{i}. [{p['date']}] {p['title']}\n"
 
+    # 네이버 데이터 추가
+    if naver_data:
+        total_naver = sum(len(v) for v in naver_data.values())
+        if total_naver > 0:
+            prompt += f"\n\n## 네이버 언급 ({total_naver}건)\n"
+            for api_type, items in naver_data.items():
+                type_name = {"blog": "블로그", "cafe": "카페", "news": "뉴스"}.get(api_type, api_type)
+                if items:
+                    prompt += f"\n### {type_name} ({len(items)}건)\n"
+                    for i, item in enumerate(items[:5], 1):
+                        prompt += f"{i}. [{item['date']}] {item['title']}\n"
+                        if item.get("description"):
+                            prompt += f"   요약: {item['description']}\n"
+
     prompt += """
 아래 형식으로 리포트를 작성해주세요.
 각 항목은 반드시 새 줄에서 시작하고, 항목 사이에 빈 줄을 넣어주세요.
@@ -412,7 +495,11 @@ async def generate_report(all_posts: list[dict], week_label: str, competitor_pos
 - 티플러스: X건 (주요 내용)
 - 아이즈모바일 대비 비교 포인트
 
-## 6. 대응 제언
+## 6. 네이버 언급 현황
+- 블로그: X건 (주요 내용)
+- 카페: X건 (주요 내용)
+
+## 7. 대응 제언
 - 제언1
 - 제언2
 - 제언3
@@ -528,28 +615,68 @@ def format_report_html(report: str) -> str:
     return "\n".join(html_parts)
 
 
-def send_email(subject: str, report: str, all_posts: list[dict]):
+def build_naver_table_html(naver_data: dict) -> str:
+    """네이버 수집 결과 HTML 표 생성"""
+    type_names = {"blog": "블로그", "cafe": "카페"}
+    html = ""
+    for api_type, items in naver_data.items():
+        if not items:
+            continue
+        type_name = type_names.get(api_type, api_type)
+        html += f"""
+<h3 style="font-size:14px; font-weight:500; margin:20px 0 8px; color:#111;
+  border-left:3px solid #34a853; padding-left:8px;">
+  네이버 {type_name} <span style="font-size:12px; color:#999; font-weight:400;">({len(items)}건)</span>
+</h3>
+<table style="width:100%; border-collapse:collapse; font-size:12px;">
+  <thead>
+    <tr style="background:#f8f8f8;">
+      <th style="text-align:left; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:55%;">제목</th>
+      <th style="text-align:left; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:25%;">출처</th>
+      <th style="text-align:center; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:15%;">날짜</th>
+    </tr>
+  </thead>
+  <tbody>"""
+        for item in items:
+            title_html = (
+                f'<a href="{item["url"]}" style="color:#1a73e8; text-decoration:none;">{item["title"]}</a>'
+                if item.get("url") else item["title"]
+            )
+            html += f"""
+    <tr style="border-bottom:1px solid #f0f0f0;">
+      <td style="padding:7px 10px;">{title_html}</td>
+      <td style="padding:7px 10px; color:#666; font-size:11px;">{item.get("source","")[:30]}</td>
+      <td style="padding:7px 10px; text-align:center; color:#666;">{item.get("date","")}</td>
+    </tr>"""
+        html += "</tbody></table>"
+    return html
+
+
+def send_email(subject: str, report: str, all_posts: list[dict], naver_data: dict = None):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = GMAIL_USER
     msg["To"]      = REPORT_TO
 
-    tables_html = build_table_html(all_posts)
-    report_html = format_report_html(report)
+    tables_html  = build_table_html(all_posts)
+    report_html  = format_report_html(report)
+    naver_html   = build_naver_table_html(naver_data) if naver_data else ""
+    naver_total  = sum(len(v) for v in naver_data.values()) if naver_data else 0
 
     html = f"""
 <html>
 <body style="font-family:sans-serif; line-height:1.7; color:#333; max-width:720px; margin:0 auto; padding:24px;">
   <h2 style="font-size:18px; font-weight:500; border-bottom:1px solid #eee; padding-bottom:12px;">{subject}</h2>
   <p style="font-size:12px; color:#999; margin-bottom:20px;">
-    총 {len(all_posts)}건 수집 · 검색어: 아이즈모바일, 아이즈 · 디시인사이드, 뽐뿌, FM코리아
+    커뮤니티 {len(all_posts)}건 · 네이버 {naver_total}건 수집 · 검색어: 아이즈모바일, 아이즈
   </p>
   <div style="font-size:14px; line-height:1.8; border:1px solid #eee; border-radius:8px; padding:8px 0; margin-bottom:8px;">
     {report_html}
   </div>
   <h2 style="font-size:16px; font-weight:500; margin-top:36px; margin-bottom:4px;
-    border-bottom:1px solid #eee; padding-bottom:10px;">수집 게시글 목록</h2>
+    border-bottom:1px solid #eee; padding-bottom:10px;">커뮤니티 수집 게시글 목록</h2>
   {tables_html}
+  {f'<h2 style="font-size:16px; font-weight:500; margin-top:36px; margin-bottom:4px; border-bottom:1px solid #eee; padding-bottom:10px;">네이버 수집 목록</h2>' + naver_html if naver_html else ""}
   <hr style="border:none; border-top:1px solid #eee; margin-top:32px;">
   <p style="font-size:11px; color:#bbb;">아이즈모바일 · 커뮤니티 모니터링 · 매주 월요일 자동 발송</p>
 </body>
@@ -641,8 +768,27 @@ async def main():
         competitor_posts[brand] = brand_posts
         print(f"    [{brand}] {len(brand_posts)}건 수집")
 
+    # 네이버 수집
+    print("\n[네이버] 수집 중...")
+    naver_data = {"blog": [], "cafe": []}
+    for kw in IZSVISION_KEYWORDS:
+        naver_result = await crawl_naver(kw)
+        for api_type in naver_data:
+            naver_data[api_type].extend(naver_result[api_type])
+
+    # 중복 제거 (URL 기준)
+    for api_type in naver_data:
+        seen_urls = set()
+        unique = []
+        for item in naver_data[api_type]:
+            if item["url"] not in seen_urls:
+                seen_urls.add(item["url"])
+                unique.append(item)
+        naver_data[api_type] = unique
+        print(f"    [네이버 {api_type}] 최종 {len(naver_data[api_type])}건")
+
     print("[분석] Groq 리포트 생성 중...")
-    report = await generate_report(unique_posts, week_label, competitor_posts)
+    report = await generate_report(unique_posts, week_label, competitor_posts, naver_data)
     print(report)
 
     print("[발송] Gmail 전송 중...")
@@ -650,6 +796,7 @@ async def main():
         subject=f"[커뮤니티 모니터링] 아이즈모바일 {week_label}",
         report=report,
         all_posts=unique_posts,
+        naver_data=naver_data,
     )
     print("[완료]")
 
