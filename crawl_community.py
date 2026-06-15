@@ -97,9 +97,8 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
                 view_el   = await row.query_selector("td.gall_count")
                 view_text = (await view_el.inner_text()).strip() if view_el else "0"
 
-                # 댓글수: span#comment_total_숫자 형태
-                reply_el = await row.query_selector("span[id^='comment_total_'], td.gall_reply_num, .gall_comment")
-                reply_text = (await reply_el.inner_text()).strip() if reply_el else "0"
+                # 댓글수: 목록에 없음
+                reply_text = ""
 
                 if not is_within_week(date_text):
                     continue
@@ -123,7 +122,16 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
 
         print(f"    [디시] '{keyword}' 결과: {len(results)}건")
 
-        for item in results[:3]:
+        # 조회수 높은 순 상위 3개 댓글 내용만 수집
+        def parse_view(v):
+            try:
+                return int(v.replace(",", "").strip())
+            except:
+                return 0
+
+        top3 = sorted(results, key=lambda x: parse_view(x["view_count"]), reverse=True)[:3]
+
+        for item in top3:
             try:
                 await page.goto(item["url"], wait_until="domcontentloaded", timeout=15000)
                 await asyncio.sleep(1)
@@ -414,6 +422,13 @@ async def generate_report(all_posts: list[dict], week_label: str) -> str:
 
 
 # ── Gmail 발송 ─────────────────────────────────────────────
+def parse_date_for_sort(date_str: str) -> str:
+    """날짜 문자열을 정렬 가능한 형태로 변환"""
+    if not date_str or date_str == "-":
+        return "0000-00-00"
+    return date_str.replace(".", "-")[:10]
+
+
 def build_table_html(all_posts: list[dict]) -> str:
     site_groups = {}
     for post in all_posts:
@@ -424,6 +439,13 @@ def build_table_html(all_posts: list[dict]) -> str:
 
     html = ""
     for site, posts in site_groups.items():
+        # 날짜 최신순 정렬
+        posts_sorted = sorted(
+            posts,
+            key=lambda x: parse_date_for_sort(x["date"]),
+            reverse=True
+        )
+
         html += f"""
 <h3 style="font-size:14px; font-weight:500; margin:28px 0 8px; color:#111;
   border-left:3px solid #1a73e8; padding-left:8px;">
@@ -432,14 +454,13 @@ def build_table_html(all_posts: list[dict]) -> str:
 <table style="width:100%; border-collapse:collapse; font-size:12px;">
   <thead>
     <tr style="background:#f8f8f8;">
-      <th style="text-align:left; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:55%;">제목</th>
-      <th style="text-align:center; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:15%;">날짜</th>
+      <th style="text-align:left; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:60%;">제목</th>
+      <th style="text-align:center; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:20%;">날짜</th>
       <th style="text-align:center; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:10%;">조회</th>
-      <th style="text-align:center; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:10%;">댓글</th>
     </tr>
   </thead>
   <tbody>"""
-        for post in posts:
+        for post in posts_sorted:
             title_html = (
                 f'<a href="{post["url"]}" style="color:#1a73e8; text-decoration:none;">{post["title"]}</a>'
                 if post["url"] else post["title"]
@@ -449,7 +470,6 @@ def build_table_html(all_posts: list[dict]) -> str:
       <td style="padding:7px 10px;">{title_html}</td>
       <td style="padding:7px 10px; text-align:center; color:#666;">{post["date"]}</td>
       <td style="padding:7px 10px; text-align:center; color:#666;">{post["view_count"]}</td>
-      <td style="padding:7px 10px; text-align:center; color:#666;">{post["reply_count"]}</td>
     </tr>"""
         html += "</tbody></table>"
     return html
