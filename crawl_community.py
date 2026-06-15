@@ -403,10 +403,10 @@ async def crawl_naver(keyword: str) -> dict:
                     title = re.sub(r'<[^>]+>', '', item.get("title", "")).strip()
                     desc  = re.sub(r'<[^>]+>', '', item.get("description", "")).strip()
 
-                    # 제목 또는 설명에 키워드 포함 여부 확인
-                    filter_keywords = ["아이즈모바일", "아이즈", "izsvision"]
-                    combined_text = (title + " " + desc).lower()
-                    if not any(k.lower() in combined_text for k in filter_keywords):
+                    # 제목 또는 설명에 정확한 키워드 포함 여부 확인
+                    filter_keywords = ["아이즈모바일", "아이즈비전", "izsvision"]
+                    combined_text = title + " " + desc
+                    if not any(k in combined_text for k in filter_keywords):
                         continue
 
                     results[api_type].append({
@@ -774,10 +774,11 @@ async def main():
         competitor_posts[brand] = brand_posts
         print(f"    [{brand}] {len(brand_posts)}건 수집")
 
-    # 네이버 수집
+    # 네이버 수집 (정확한 키워드만 사용)
     print("\n[네이버] 수집 중...")
     naver_data = {"blog": [], "cafe": []}
-    for kw in IZSVISION_KEYWORDS:
+    NAVER_KEYWORDS = ["아이즈모바일", "아이즈비전"]
+    for kw in NAVER_KEYWORDS:
         naver_result = await crawl_naver(kw)
         for api_type in naver_data:
             naver_data[api_type].extend(naver_result[api_type])
