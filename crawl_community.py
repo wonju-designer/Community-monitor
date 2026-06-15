@@ -384,6 +384,8 @@ async def crawl_naver() -> dict:
                     })
 
                 print(f"    [네이버 {api_type}] 수집: {len(results[api_type])}건")
+                for item in results[api_type]:
+                    print(f"      - [{item['date']}] {item['title']}")
 
             except Exception as e:
                 print(f"    [네이버 {api_type}] 오류: {e}")
@@ -401,10 +403,25 @@ async def filter_negative_naver(naver_data: dict) -> dict:
             continue
         type_name = type_names[api_type]
 
-        prompt = f"아래 '아이즈모바일' 관련 {type_name} 글 중 부정적인 내용(불만, 오류, 환불, 안됨, 느림, 최악, 문제 등)의 글 인덱스를 반환하세요.\n\n"
+        prompt = f"""아래는 네이버 {type_name}에서 수집된 '아이즈모바일' 관련 글 목록입니다.
+각 글을 읽고 아래 기준 중 하나라도 해당하면 부정글로 분류하세요:
+- 불만, 실망, 화남, 짜증
+- 오류, 안됨, 불가, 실패
+- 환불, 해지, 탈퇴
+- 느림, 최악, 별로, 비추
+- 고객센터 문제, 응대 불만
+- 서비스 문제, 품질 불만
+- 위 기준 외에도 전반적으로 부정적인 톤이면 포함
+
+글 목록:
+"""
         for i, item in enumerate(items):
-            prompt += f"{i}. {item['title']} / {item.get('description','')[:80]}\n"
-        prompt += '\nJSON 형식으로만 응답: {"negative_indices": [숫자들]}'
+            prompt += f"{i}. 제목: {item['title']}\n   내용: {item.get('description','')[:100]}\n"
+        prompt += """
+JSON 형식으로만 응답 (다른 텍스트 없이):
+{"negative_indices": [0기반 인덱스 번호들]}
+
+부정글이 없으면: {"negative_indices": []}"""
 
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
