@@ -30,10 +30,11 @@ KEYWORDS = ["아이즈모바일", "아이즈"]
 # ── 날짜 유틸 ──────────────────────────────────────────────
 def get_week_label():
     today = datetime.date.today()
-    monday = today - datetime.timedelta(days=today.weekday())
-    sunday = monday + datetime.timedelta(days=6)
-    week_num = (monday.day - 1) // 7 + 1
-    return f"{today.year}년 {today.month}월 {week_num}주차 ({monday.month}/{monday.day} – {sunday.month}/{sunday.day})"
+    # 지난 주 월~일 기준 (수집 기간)
+    last_monday = today - datetime.timedelta(days=today.weekday() + 7)
+    last_sunday = last_monday + datetime.timedelta(days=6)
+    week_num = (last_monday.day - 1) // 7 + 1
+    return f"{last_monday.year}년 {last_monday.month}월 {week_num}주차 ({last_monday.month}/{last_monday.day} – {last_sunday.month}/{last_sunday.day})"
 
 def is_within_week(date_str: str) -> bool:
     if not date_str:
@@ -452,6 +453,37 @@ def build_table_html(all_posts: list[dict]) -> str:
     return html
 
 
+def format_report_html(report: str) -> str:
+    """리포트 텍스트를 HTML 단락으로 변환"""
+    lines = report.split("\n")
+    html_parts = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        elif line.startswith("## "):
+            # 섹션 헤더
+            title = line.replace("## ", "")
+            html_parts.append(
+                f'<div style="margin-top:24px; padding:10px 14px; background:#f0f4ff; ' +
+                f'border-left:4px solid #1a73e8; border-radius:4px;">' +
+                f'<strong style="font-size:14px; color:#1a73e8;">{title}</strong></div>'
+            )
+        elif line.startswith("- "):
+            # 리스트 항목
+            text = line.replace("- ", "")
+            html_parts.append(
+                f'<div style="padding:4px 14px 4px 28px; color:#444; font-size:13px;">' +
+                f'• {text}</div>'
+            )
+        else:
+            # 일반 텍스트
+            html_parts.append(
+                f'<div style="padding:4px 14px; color:#333; font-size:13px;">{line}</div>'
+            )
+    return "\n".join(html_parts)
+
+
 def send_email(subject: str, report: str, all_posts: list[dict]):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -459,6 +491,7 @@ def send_email(subject: str, report: str, all_posts: list[dict]):
     msg["To"]      = REPORT_TO
 
     tables_html = build_table_html(all_posts)
+    report_html = format_report_html(report)
 
     html = f"""
 <html>
@@ -467,9 +500,8 @@ def send_email(subject: str, report: str, all_posts: list[dict]):
   <p style="font-size:12px; color:#999; margin-bottom:20px;">
     총 {len(all_posts)}건 수집 · 검색어: 아이즈모바일, 아이즈 · 디시인사이드, 뽐뿌, FM코리아
   </p>
-  <div style="white-space:pre-wrap; font-size:14px; line-height:1.8;
-    background:#fafafa; padding:16px 20px; border-radius:8px; border:1px solid #eee;">
-    {report}
+  <div style="font-size:14px; line-height:1.8; border:1px solid #eee; border-radius:8px; padding:8px 0; margin-bottom:8px;">
+    {report_html}
   </div>
   <h2 style="font-size:16px; font-weight:500; margin-top:36px; margin-bottom:4px;
     border-bottom:1px solid #eee; padding-bottom:10px;">수집 게시글 목록</h2>
