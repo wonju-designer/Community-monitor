@@ -2,8 +2,8 @@ name: 주간 커뮤니티 모니터링 (아이즈비전)
 
 on:
   schedule:
-    - cron: '0 0 * * 1'
-  workflow_dispatch:
+    - cron: '0 0 * * 1'   # 매주 월요일 UTC 00:00 = KST 09:00
+  workflow_dispatch:        # 수동 실행
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -35,3 +35,13 @@ jobs:
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           REPORT_TO:          ${{ secrets.REPORT_TO }}
         run: python crawl_community.py
+
+      - name: 스케줄 유지용 더미 커밋
+        if: github.event_name == 'schedule'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "Last run: $(date)" > .last_run
+          git add .last_run
+          git commit -m "chore: keep schedule alive [$(date +%Y-%m-%d)]" || echo "Nothing to commit"
+          git push || echo "Push skipped"
