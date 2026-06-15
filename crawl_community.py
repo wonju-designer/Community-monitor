@@ -25,7 +25,16 @@ GMAIL_USER         = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 REPORT_TO          = os.environ["REPORT_TO"]
 
-KEYWORDS = ["아이즈모바일", "아이즈"]
+# 아이즈모바일 키워드
+IZSVISION_KEYWORDS = ["아이즈모바일", "아이즈"]
+
+# 경쟁사 키워드
+COMPETITOR_KEYWORDS = {
+    "프리티":   ["프리티"],
+    "티플러스": ["티플러스"],
+}
+
+KEYWORDS = IZSVISION_KEYWORDS
 
 # ── 날짜 유틸 ──────────────────────────────────────────────
 def get_week_label():
@@ -341,7 +350,7 @@ async def crawl_fmkorea(page, keyword: str) -> list[dict]:
 
 
 # ── Groq 리포트 생성 ───────────────────────────────────────
-async def generate_report(all_posts: list[dict], week_label: str) -> str:
+async def generate_report(all_posts: list[dict], week_label: str, competitor_posts: dict = None) -> str:
     if not all_posts:
         return "이번 주 수집된 언급 데이터가 없습니다."
 
@@ -353,19 +362,28 @@ async def generate_report(all_posts: list[dict], week_label: str) -> str:
         site_summary[site].append(post)
 
     prompt = f"""당신은 브랜드 평판 분석 전문가입니다.
-아래는 이번 주 커뮤니티에서 수집된 '아이즈모바일' 관련 게시글 및 댓글 데이터입니다.
+아래는 이번 주 커뮤니티에서 수집된 '아이즈모바일' 관련 게시글 및 경쟁사 동향 데이터입니다.
 
 기간: {week_label}
 총 수집: {len(all_posts)}건
 
 """
     for site, posts in site_summary.items():
-        prompt += f"\n## {site} ({len(posts)}건)\n"
+        prompt += f"\n## 아이즈모바일 - {site} ({len(posts)}건)\n"
         for i, p in enumerate(posts, 1):
-            prompt += f"{i}. [{p['date']}] {p['title']} (조회 {p['view_count']} | 댓글 {p['reply_count']})\n"
+            prompt += f"{i}. [{p['date']}] {p['title']} (조회 {p['view_count']})\n"
             if p.get("comments"):
                 for c in p["comments"][:3]:
                     prompt += f"   댓글: {c}\n"
+
+    # 경쟁사 데이터 추가
+    if competitor_posts:
+        prompt += "\n\n## 경쟁사 동향\n"
+        for brand, posts in competitor_posts.items():
+            if posts:
+                prompt += f"\n### {brand} ({len(posts)}건)\n"
+                for i, p in enumerate(posts[:5], 1):
+                    prompt += f"{i}. [{p['date']}] {p['title']}\n"
 
     prompt += """
 아래 형식으로 리포트를 작성해주세요.
@@ -377,7 +395,6 @@ async def generate_report(all_posts: list[dict], week_label: str) -> str:
 ## 2. 사이트별 언급 현황
 - 디시인사이드: X건 (주요 토픽)
 - 뽐뿌: X건 (주요 토픽)
-- FM코리아: X건 (주요 토픽)
 
 ## 3. 감성 분석
 - 긍정: X건 (주요 내용)
@@ -390,7 +407,12 @@ async def generate_report(all_posts: list[dict], week_label: str) -> str:
 - 이슈2
 - 이슈3
 
-## 5. 대응 제언
+## 5. 경쟁사 동향
+- 프리티: X건 (주요 내용)
+- 티플러스: X건 (주요 내용)
+- 아이즈모바일 대비 비교 포인트
+
+## 6. 대응 제언
 - 제언1
 - 제언2
 - 제언3
@@ -589,10 +611,38 @@ async def main():
             seen.add(key)
             unique_posts.append(post)
 
-    print(f"\n[수집 완료] 총 {len(unique_posts)}건")
+    print(f"\n[수집 완료] 아이즈모바일 총 {len(unique_posts)}건")
+
+    # 경쟁사 수집
+    competitor_posts = {}
+    for brand, keywords in COMPETITOR_KEYWORDS.items():
+        brand_posts = []
+        for kw in keywords:
+            print(f"\n[경쟁사] {brand} - {kw} 수집 중...")
+            async with async_playwright() as p2:
+                browser2 = await p2.chromium.launch(
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox"]
+                )
+                context2 = await browser2.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/124.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 900},
+                    locale="ko-KR",
+                )
+                page2 = await context2.new_page()
+                dci = await crawl_dcinside(page2, kw)
+                brand_posts.extend(dci)
+                await browser2.close()
+            await asyncio.sleep(2)
+        competitor_posts[brand] = brand_posts
+        print(f"    [{brand}] {len(brand_posts)}건 수집")
 
     print("[분석] Groq 리포트 생성 중...")
-    report = await generate_report(unique_posts, week_label)
+    report = await generate_report(unique_posts, week_label, competitor_posts)
     print(report)
 
     print("[발송] Gmail 전송 중...")
