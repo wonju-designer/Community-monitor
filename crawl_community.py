@@ -403,6 +403,12 @@ async def crawl_naver(keyword: str) -> dict:
                     title = re.sub(r'<[^>]+>', '', item.get("title", "")).strip()
                     desc  = re.sub(r'<[^>]+>', '', item.get("description", "")).strip()
 
+                    # 제목 또는 설명에 키워드 포함 여부 확인
+                    filter_keywords = ["아이즈모바일", "아이즈", "izsvision"]
+                    combined_text = (title + " " + desc).lower()
+                    if not any(k.lower() in combined_text for k in filter_keywords):
+                        continue
+
                     results[api_type].append({
                         "title": title,
                         "description": desc[:200],
