@@ -372,8 +372,9 @@ async def crawl_naver() -> dict:
                     title = re.sub(r'<[^>]+>', '', item.get("title", "")).strip()
                     desc  = re.sub(r'<[^>]+>', '', item.get("description", "")).strip()
 
-                    # 제목에 반드시 아이즈모바일 포함
-                    if "아이즈모바일" not in title:
+                    # 제목에 아이즈모바일 또는 아이즈 모바일(띄어쓰기) 포함
+                    title_norm = title.replace(" ", "")
+                    if "아이즈모바일" not in title_norm:
                         continue
 
                     results[api_type].append({
