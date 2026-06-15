@@ -2,7 +2,7 @@ name: 주간 커뮤니티 모니터링 (아이즈비전)
 
 on:
   schedule:
-    - cron: '0 0 * * 1'   # 매주 월요일 UTC 00:00 = KST 09:00
+    - cron: '0 23 * * 0'  # 일요일 UTC 23:00 = 월요일 KST 08:00 (지연 감안)
   workflow_dispatch:        # 수동 실행
 
 env:
