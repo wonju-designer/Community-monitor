@@ -374,7 +374,7 @@ async def crawl_naver(keyword: str) -> dict:
             try:
                 resp = await client.get(url, headers=headers, params={
                     "query": keyword,
-                    "display": 100,  # 최대 100개 수집
+                    "display": 30,   # 30개 수집 후 AI 부정 분류
                     "sort": "date",
                 })
                 if resp.status_code != 200:
@@ -423,6 +423,66 @@ async def crawl_naver(keyword: str) -> dict:
                 print(f"    [네이버 {api_type}] 오류: {e}")
 
     return results
+
+
+# ── 네이버 부정글 분류 ─────────────────────────────────────
+async def filter_negative_naver(naver_data: dict) -> dict:
+    """Groq로 네이버 수집글 중 부정글만 추출"""
+    filtered = {"blog": [], "cafe": []}
+
+    for api_type, items in naver_data.items():
+        if not items:
+            continue
+
+        type_name = {"blog": "블로그", "cafe": "카페"}.get(api_type, api_type)
+        prompt = f"""아래는 네이버 {type_name}에서 수집된 '아이즈모바일' 관련 글 목록입니다.
+각 글의 감성을 분석하고 부정적인 내용의 글 인덱스만 반환해주세요.
+
+글 목록:
+"""
+        for i, item in enumerate(items):
+            prompt += f"{i}. {item['title']} — {item.get('description', '')[:100]}\n"
+
+        prompt += """
+아래 JSON 형식으로만 응답해주세요:
+{"negative_indices": [0기반 인덱스 번호들]}
+
+부정적인 내용: 불만, 환불 거부, 오류, 연결 안됨, 최악, 사기, 문제, 느림, 답답 등"""
+
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 200,
+            "temperature": 0.1,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers=headers,
+                    json=payload,
+                )
+                if resp.status_code == 200:
+                    text = resp.json()["choices"][0]["message"]["content"]
+                    json_match = re.search(r'\{.*\}', text, re.DOTALL)
+                    if json_match:
+                        result = json.loads(json_match.group())
+                        indices = result.get("negative_indices", [])
+                        for idx in indices:
+                            if isinstance(idx, int) and 0 <= idx < len(items):
+                                filtered[api_type].append(items[idx])
+                        print(f"    [네이버 {type_name}] 전체 {len(items)}건 → 부정 {len(filtered[api_type])}건")
+        except Exception as e:
+            print(f"    [네이버 부정 분류] 오류: {e}")
+            # 오류 시 전체 반환
+            filtered[api_type] = items[:10]
+
+    return filtered
 
 # ── Groq 리포트 생성 ───────────────────────────────────────
 async def generate_report(all_posts: list[dict], week_label: str, competitor_posts: dict = None, naver_data: dict = None) -> str:
@@ -501,9 +561,9 @@ async def generate_report(all_posts: list[dict], week_label: str, competitor_pos
 - 티플러스: X건 (주요 내용)
 - 아이즈모바일 대비 비교 포인트
 
-## 6. 네이버 언급 현황
-- 블로그: X건 (주요 내용)
-- 카페: X건 (주요 내용)
+## 6. 네이버 부정 언급 현황
+- 블로그 부정글: X건 (주요 내용)
+- 카페 부정글: X건 (주요 내용)
 
 ## 7. 대응 제언
 - 제언1
@@ -787,31 +847,73 @@ async def main():
 
     print(f"\n[수집 완료] 아이즈모바일 총 {len(unique_posts)}건")
 
-    # 경쟁사 수집
+    # 경쟁사 수집 (기존 브라우저 재사용)
     competitor_posts = {}
     for brand, keywords in COMPETITOR_KEYWORDS.items():
         brand_posts = []
         for kw in keywords:
             print(f"\n[경쟁사] {brand} - {kw} 수집 중...")
-            async with async_playwright() as p2:
-                browser2 = await p2.chromium.launch(
-                    headless=True,
-                    args=["--no-sandbox", "--disable-setuid-sandbox"]
-                )
-                context2 = await browser2.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/124.0.0.0 Safari/537.36"
-                    ),
-                    viewport={"width": 1280, "height": 900},
-                    locale="ko-KR",
-                )
-                page2 = await context2.new_page()
-                dci = await crawl_dcinside(page2, kw)
-                brand_posts.extend(dci)
-                await browser2.close()
+            results = []
+            try:
+                encoded = quote(kw)
+                url = f"https://gall.dcinside.com/mgallery/board/lists?id=mvnogallery&s_type=search_subject_memo&s_keyword={encoded}"
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(2)
+
+                rows = await page.query_selector_all("tr.ub-content")
+                if not rows:
+                    rows = await page.query_selector_all("tbody tr")
+
+                for row in rows[:30]:
+                    try:
+                        notice = await row.get_attribute("class") or ""
+                        if "notice" in notice:
+                            continue
+
+                        title_el = await row.query_selector("td.gall_tit a:first-child, .gall_tit a")
+                        if not title_el:
+                            continue
+                        title = (await title_el.inner_text()).strip()
+                        if not title or len(title) < 2:
+                            continue
+
+                        # 경쟁사 키워드 확인
+                        if kw not in title:
+                            continue
+
+                        date_el = await row.query_selector("td.gall_date, span.gall_date")
+                        if date_el:
+                            date_text = await date_el.get_attribute("title") or (await date_el.inner_text()).strip()
+                        else:
+                            date_text = ""
+
+                        if not is_within_week(date_text):
+                            continue
+
+                        view_el = await row.query_selector("td.gall_count")
+                        view_text = (await view_el.inner_text()).strip() if view_el else "0"
+
+                        href = await title_el.get_attribute("href") or ""
+                        full_url = f"https://gall.dcinside.com{href}" if href.startswith("/") else href
+
+                        results.append({
+                            "site": "디시인사이드",
+                            "title": title,
+                            "url": full_url,
+                            "date": date_text,
+                            "view_count": view_text,
+                            "reply_count": "",
+                            "comments": [],
+                        })
+                    except Exception:
+                        continue
+
+            except Exception as e:
+                print(f"    [경쟁사 디시] 오류: {e}")
+
+            brand_posts.extend(results)
             await asyncio.sleep(2)
+
         competitor_posts[brand] = brand_posts
         print(f"    [{brand}] {len(brand_posts)}건 수집")
 
@@ -835,8 +937,14 @@ async def main():
         naver_data[api_type] = unique
         print(f"    [네이버 {api_type}] 최종 {len(naver_data[api_type])}건")
 
+    # 네이버 부정글 분류
+    print("[네이버] 부정글 분류 중...")
+    naver_negative = await filter_negative_naver(naver_data)
+    naver_total_negative = sum(len(v) for v in naver_negative.values())
+    print(f"    [네이버] 부정글 최종 {naver_total_negative}건")
+
     print("[분석] Groq 리포트 생성 중...")
-    report = await generate_report(unique_posts, week_label, competitor_posts, naver_data)
+    report = await generate_report(unique_posts, week_label, competitor_posts, naver_negative)
     print(report)
 
     print("[발송] Gmail 전송 중...")
@@ -844,7 +952,7 @@ async def main():
         subject=f"[커뮤니티 모니터링] 아이즈모바일 {week_label}",
         report=report,
         all_posts=unique_posts,
-        naver_data=naver_data,
+        naver_data=naver_negative,
         competitor_posts=competitor_posts,
     )
     print("[완료]")
