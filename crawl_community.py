@@ -94,10 +94,12 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
                 else:
                     date_text = ""
 
-                reply_el = await row.query_selector("td.gall_reply_num, .gall_comment")
-                view_el  = await row.query_selector("td.gall_count")
+                view_el   = await row.query_selector("td.gall_count")
+                view_text = (await view_el.inner_text()).strip() if view_el else "0"
+
+                # 댓글수: span#comment_total_숫자 형태
+                reply_el = await row.query_selector("span[id^='comment_total_'], td.gall_reply_num, .gall_comment")
                 reply_text = (await reply_el.inner_text()).strip() if reply_el else "0"
-                view_text  = (await view_el.inner_text()).strip()  if view_el  else "0"
 
                 if not is_within_week(date_text):
                     continue
