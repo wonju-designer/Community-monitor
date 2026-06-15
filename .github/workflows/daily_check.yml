@@ -1,0 +1,48 @@
+name: 일일 커뮤니티 점검 (AI 에이전트)
+
+on:
+  schedule:
+    - cron: '0 23 * * *'  # 매일 UTC 23:00 = 다음날 KST 08:00 (지연 감안)
+  workflow_dispatch:        # 수동 실행
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  daily-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4.2.2
+
+      - name: Python 3.11 설정
+        uses: actions/setup-python@v5.6.0
+        with:
+          python-version: '3.11'
+
+      - name: 의존성 설치
+        run: |
+          pip install httpx playwright
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: 일일 점검 실행
+        env:
+          GROQ_API_KEY:       ${{ secrets.GROQ_API_KEY }}
+          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          REPORT_TO:          ${{ secrets.REPORT_TO }}
+        run: python daily_check.py
+
+      - name: 스케줄 유지용 커밋
+        if: github.event_name == 'schedule'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "Daily check: $(date)" > .daily_run
+          git add .daily_run
+          git add baseline.json 2>/dev/null || true
+          git commit -m "chore: daily check [$(date +%Y-%m-%d)]" || echo "Nothing to commit"
+          git push || echo "Push skipped"
