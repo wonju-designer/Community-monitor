@@ -660,23 +660,62 @@ def format_report_html(report: str) -> str:
     return "\n".join(html_parts)
 
 
-def send_email(subject: str, report: str, all_posts: list[dict], naver_negative: dict):
+def build_naver_all_table_html(naver_data: dict) -> str:
+    """네이버 수집 전체 글 표"""
+    type_names = {"blog": "블로그", "cafe": "카페"}
+    html = ""
+    for api_type, items in naver_data.items():
+        if not items:
+            continue
+        type_name = type_names[api_type]
+        html += f"""
+<h3 style="font-size:14px; font-weight:500; margin:28px 0 8px; color:#111;
+  border-left:3px solid #34a853; padding-left:8px;">
+  네이버 {type_name} <span style="font-size:12px; color:#999; font-weight:400;">({len(items)}건)</span>
+</h3>
+<table style="width:100%; border-collapse:collapse; font-size:12px;">
+  <thead>
+    <tr style="background:#f8f8f8;">
+      <th style="text-align:left; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:55%;">제목</th>
+      <th style="text-align:left; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:25%;">출처</th>
+      <th style="text-align:center; padding:7px 10px; border-bottom:1px solid #e0e0e0; width:15%;">날짜</th>
+    </tr>
+  </thead>
+  <tbody>"""
+        for item in items:
+            title_html = (
+                f'<a href="{item["url"]}" style="color:#1a73e8; text-decoration:none;">{item["title"]}</a>'
+                if item.get("url") else item["title"]
+            )
+            html += f"""
+    <tr style="border-bottom:1px solid #f0f0f0;">
+      <td style="padding:7px 10px;">{title_html}</td>
+      <td style="padding:7px 10px; color:#666; font-size:11px;">{item.get("source","")[:30]}</td>
+      <td style="padding:7px 10px; text-align:center; color:#666;">{item.get("date","")}</td>
+    </tr>"""
+        html += "</tbody></table>"
+    return html
+
+
+def send_email(subject: str, report: str, all_posts: list[dict], naver_negative: dict, naver_data: dict = None):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"]    = GMAIL_USER
     msg["To"]      = REPORT_TO
 
     tables_html      = build_table_html(all_posts)
-    naver_html       = build_naver_table_html(naver_negative)
+    naver_neg_html   = build_naver_table_html(naver_negative)
+    naver_all_html   = build_naver_all_table_html(naver_data) if naver_data else ""
     report_html      = format_report_html(report)
     naver_total      = sum(len(v) for v in naver_negative.values())
+    naver_all_total  = sum(len(v) for v in naver_data.values()) if naver_data else 0
 
     html = f"""
 <html>
 <body style="font-family:sans-serif; line-height:1.7; color:#333; max-width:720px; margin:0 auto; padding:24px;">
   <h2 style="font-size:18px; font-weight:500; border-bottom:1px solid #eee; padding-bottom:12px;">{subject}</h2>
   <p style="font-size:12px; color:#999; margin-bottom:20px;">
-    커뮤니티 {len(all_posts)}건 · 네이버 부정글 {naver_total}건 수집
+    커뮤니티 {len(all_posts)}건 · 네이버 {naver_all_total}건 수집 (부정 {naver_total}건)
   </p>
   <div style="font-size:14px; line-height:1.8; border:1px solid #eee; border-radius:8px; padding:8px 0; margin-bottom:8px;">
     {report_html}
@@ -684,7 +723,8 @@ def send_email(subject: str, report: str, all_posts: list[dict], naver_negative:
   <h2 style="font-size:16px; font-weight:500; margin-top:36px; margin-bottom:4px;
     border-bottom:1px solid #eee; padding-bottom:10px;">수집 게시글 목록</h2>
   {tables_html}
-  {('<h2 style="font-size:16px; font-weight:500; margin-top:36px; margin-bottom:4px; border-bottom:1px solid #eee; padding-bottom:10px;">네이버 부정 언급 목록</h2>' + naver_html) if naver_html.strip() else ""}
+  {naver_all_html}
+  {('<h2 style="font-size:16px; font-weight:500; margin-top:36px; margin-bottom:4px; border-bottom:1px solid #eee; padding-bottom:10px;">네이버 부정 언급 목록</h2>' + naver_neg_html) if naver_neg_html.strip() else ""}
   <hr style="border:none; border-top:1px solid #eee; margin-top:32px;">
   <p style="font-size:11px; color:#bbb;">아이즈모바일 · 커뮤니티 모니터링 · 매주 월요일 자동 발송</p>
 </body>
@@ -773,6 +813,7 @@ async def main():
         report=report,
         all_posts=unique_posts,
         naver_negative=naver_negative,
+        naver_data=naver_data,
     )
     print("[완료]")
 
