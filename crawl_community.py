@@ -1,10 +1,8 @@
 """
-아이즈모바일 커뮤니티 모니터링 AI 에이전트
+아이즈모바일 커뮤니티 모니터링 — 주간 리포트
 - 수집: 디시인사이드, 뽐뿌, 네이버 블로그/카페
-- 1차 판단: Groq (부정글 분류 + 심각도 판단)
-- 2차 행동: Gemini (추가 수집 키워드 결정 + 대응 초안 작성)
-- 심각도 높을 때: 긴급 알림 발송
-- 매주 월요일: 정기 리포트 발송
+- 분석: Groq (감성 분석 + 트렌드 비교)
+- 발송: Gmail 자동 발송 (매주 월요일)
 """
 
 import os
@@ -16,13 +14,13 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import quote
+from pathlib import Path
 
 import httpx
 from playwright.async_api import async_playwright
 
 # ── 환경 변수 ──────────────────────────────────────────────
 GROQ_API_KEY        = os.environ["GROQ_API_KEY"]
-GEMINI_API_KEY      = os.environ["GEMINI_API_KEY"]
 GMAIL_USER          = os.environ["GMAIL_USER"]
 GMAIL_APP_PASSWORD  = os.environ["GMAIL_APP_PASSWORD"]
 REPORT_TO           = os.environ["REPORT_TO"]
@@ -30,6 +28,22 @@ NAVER_CLIENT_ID     = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
 KEYWORDS = ["아이즈모바일", "아이즈"]
+WEEKLY_DATA_FILE = "weekly_data.json"
+
+# ── 부정 판단 기준 ─────────────────────────────────────────
+NEGATIVE_CRITERIA = """
+부정글 판단 기준 (아래 중 하나라도 해당하면 부정):
+1. 서비스 불만 직접 표현: 최악, 별로, 실망, 민원 제기, 도둑놈, 사기, 쓰레기
+2. 해지/환불 문제: 환불 거부, 해지 안됨, 위약금 분쟁
+3. 오류/장애 경험: 개통 오류, 데이터 안됨, 통화 불가, 앱 오류, 시스템 장애
+
+제외 (부정 아님):
+- 단순 정보 문의
+- 중립적 사용 후기
+- 요금제 비교 (우열 없는 단순 비교)
+- 고객센터 전화번호 등 정보성 글
+"""
+
 
 # ── 날짜 유틸 ──────────────────────────────────────────────
 def get_week_label():
@@ -38,6 +52,13 @@ def get_week_label():
     last_sunday = last_monday + datetime.timedelta(days=6)
     week_num = (last_monday.day - 1) // 7 + 1
     return f"{last_monday.year}년 {last_monday.month}월 {week_num}주차 ({last_monday.month}/{last_monday.day} – {last_sunday.month}/{last_sunday.day})"
+
+def get_prev_week_label():
+    today = datetime.date.today()
+    prev_monday = today - datetime.timedelta(days=today.weekday() + 14)
+    prev_sunday = prev_monday + datetime.timedelta(days=6)
+    week_num = (prev_monday.day - 1) // 7 + 1
+    return f"{prev_monday.year}년 {prev_monday.month}월 {week_num}주차"
 
 def is_within_week(date_str: str) -> bool:
     if not date_str:
@@ -63,6 +84,30 @@ def parse_date_for_sort(date_str: str) -> str:
     if not date_str or date_str == "-":
         return "0000-00-00"
     return date_str.replace(".", "-")[:10]
+
+
+# ── 주차별 데이터 저장/로드 ────────────────────────────────
+def load_weekly_data() -> dict:
+    try:
+        if Path(WEEKLY_DATA_FILE).exists():
+            with open(WEEKLY_DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def save_weekly_data(week_label: str, stats: dict):
+    data = load_weekly_data()
+    data[week_label] = stats
+    # 최근 8주만 유지
+    if len(data) > 8:
+        oldest = sorted(data.keys())[0]
+        del data[oldest]
+    try:
+        with open(WEEKLY_DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[데이터 저장] 오류: {e}")
 
 
 # ── 디시인사이드 수집 ──────────────────────────────────────
@@ -220,51 +265,6 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
     return results
 
 
-# ── FM코리아 수집 ──────────────────────────────────────────
-async def crawl_fmkorea(page, keyword: str) -> list[dict]:
-    results = []
-    try:
-        encoded = quote(keyword)
-        url = f"https://www.fmkorea.com/search.php?act=IS&is_keyword={encoded}&mid=home&where=document&page=1"
-        print(f"    [FM코리아] '{keyword}' 검색 중...")
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(3)
-        links = await page.query_selector_all("a[href]")
-        seen_urls = set()
-        for link in links:
-            try:
-                href = await link.get_attribute("href") or ""
-                path = href.split("?")[0].strip("/")
-                if not path.isdigit():
-                    continue
-                full_url = f"https://www.fmkorea.com/{path}"
-                if full_url in seen_urls:
-                    continue
-                seen_urls.add(full_url)
-                title = await page.evaluate("el => (el.innerText || el.textContent || '').trim()", link)
-                if not title or len(title) < 5:
-                    continue
-                parent = await link.evaluate_handle("el => el.closest('li') || el.closest('div') || el.parentElement")
-                date_el = await parent.query_selector(".regdate, time, .date")
-                view_el = await parent.query_selector(".readCount, .hit")
-                date_text = (await date_el.inner_text()).strip() if date_el else ""
-                view_text = (await view_el.inner_text()).strip() if view_el else "0"
-                if date_text and not is_within_week(date_text):
-                    continue
-                results.append({
-                    "site": "FM코리아", "title": title,
-                    "url": full_url, "date": date_text,
-                    "view_count": view_text, "reply_count": "0",
-                    "comments": [],
-                })
-            except Exception:
-                continue
-        print(f"    [FM코리아] '{keyword}' 결과: {len(results)}건")
-    except Exception as e:
-        print(f"    [FM코리아] 오류: {e}")
-    return results
-
-
 # ── 네이버 수집 ────────────────────────────────────────────
 async def crawl_naver() -> dict:
     results = {"blog": [], "cafe": []}
@@ -302,8 +302,7 @@ async def crawl_naver() -> dict:
                         continue
                     title = re.sub(r'<[^>]+>', '', item.get("title", "")).strip()
                     desc  = re.sub(r'<[^>]+>', '', item.get("description", "")).strip()
-                    title_norm = title.replace(" ", "")
-                    if "아이즈모바일" not in title_norm:
+                    if "아이즈모바일" not in title.replace(" ", ""):
                         continue
                     results[api_type].append({
                         "title": title, "description": desc[:200],
@@ -319,25 +318,25 @@ async def crawl_naver() -> dict:
     return results
 
 
-# ── Groq: 부정글 분류 + 심각도 판단 ──────────────────────
-async def groq_analyze(all_posts: list[dict], naver_data: dict) -> dict:
-    """부정글 분류 + 심각도 판단"""
-
-    # 네이버 부정글 분류
-    naver_negative = {"blog": [], "cafe": []}
+# ── Groq: 네이버 부정글 분류 ──────────────────────────────
+async def classify_naver_negative(naver_data: dict) -> dict:
+    filtered = {"blog": [], "cafe": []}
     type_names = {"blog": "블로그", "cafe": "카페"}
 
     for api_type, items in naver_data.items():
         if not items:
             continue
         type_name = type_names[api_type]
-        prompt = f"""아래 '아이즈모바일' 관련 네이버 {type_name} 글 중 부정적인 내용의 글 인덱스를 반환하세요.
-부정 기준: 불만, 오류, 환불, 안됨, 느림, 최악, 문제, 실망, 짜증, 해지, 비추
 
+        prompt = f"""아래 '아이즈모바일' 관련 네이버 {type_name} 글 목록입니다.
+
+{NEGATIVE_CRITERIA}
+
+글 목록:
 """
         for i, item in enumerate(items):
             prompt += f"{i}. 제목: {item['title']}\n   내용: {item.get('description','')[:100]}\n"
-        prompt += '\nJSON만 응답: {"negative_indices": [숫자들]}'
+        prompt += '\nJSON만 응답: {"negative_indices": [0기반 인덱스 번호들]}'
 
         try:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -353,115 +352,22 @@ async def groq_analyze(all_posts: list[dict], naver_data: dict) -> dict:
                         indices = json.loads(match.group()).get("negative_indices", [])
                         for idx in indices:
                             if isinstance(idx, int) and 0 <= idx < len(items):
-                                naver_negative[api_type].append(items[idx])
-            print(f"    [Groq] 네이버 {type_name} 부정: {len(naver_negative[api_type])}건")
+                                filtered[api_type].append(items[idx])
+            print(f"    [Groq] 네이버 {type_name} 부정: {len(filtered[api_type])}건")
         except Exception as e:
-            print(f"    [Groq] 오류: {e}")
+            print(f"    [Groq] 분류 오류: {e}")
 
-    # 심각도 판단
-    total_negative = sum(len(v) for v in naver_negative.values())
-    all_titles = [p["title"] for p in all_posts]
-
-    severity_prompt = f"""아래는 이번 주 '아이즈모바일' 관련 커뮤니티 게시글 {len(all_posts)}건과 네이버 부정글 {total_negative}건입니다.
-
-커뮤니티 게시글 제목:
-{chr(10).join(f"- {t}" for t in all_titles[:20])}
-
-네이버 부정글:
-{chr(10).join(f"- {item['title']}" for v in naver_negative.values() for item in v)}
-
-아래 기준으로 심각도를 판단하세요:
-- 높음: 특정 이슈 집중(환불/오류/서비스 불만 3건 이상), 또는 전반적 부정 여론 강함
-- 보통: 부정 언급 있으나 특정 이슈 집중 아님
-- 낮음: 부정 언급 거의 없음
-
-JSON만 응답: {{"severity": "높음/보통/낮음", "main_issue": "주요 이슈 한 줄", "keywords": ["키워드1", "키워드2"]}}"""
-
-    severity = "낮음"
-    main_issue = ""
-    extra_keywords = []
-
-    try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": severity_prompt}], "max_tokens": 200, "temperature": 0.1},
-            )
-            if resp.status_code == 200:
-                text = resp.json()["choices"][0]["message"]["content"]
-                match = re.search(r'\{.*\}', text, re.DOTALL)
-                if match:
-                    result = json.loads(match.group())
-                    severity = result.get("severity", "낮음")
-                    main_issue = result.get("main_issue", "")
-                    extra_keywords = result.get("keywords", [])
-        print(f"    [Groq] 심각도: {severity} / 주요이슈: {main_issue}")
-    except Exception as e:
-        print(f"    [Groq] 심각도 판단 오류: {e}")
-
-    return {
-        "naver_negative": naver_negative,
-        "severity": severity,
-        "main_issue": main_issue,
-        "extra_keywords": extra_keywords,
-    }
+    return filtered
 
 
-# ── Gemini: 추가 수집 키워드 결정 + 대응 초안 작성 ────────
-async def gemini_action(severity: str, main_issue: str, extra_keywords: list, all_posts: list[dict]) -> dict:
-    """심각도 높을 때만 실행"""
-    if severity != "높음":
-        return {"extra_posts": [], "response_draft": ""}
-
-    print(f"\n[Gemini] 심각도 높음 감지 → 추가 수집 + 대응 초안 작성")
-
-    gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
-
-    # 1. 대응 초안 작성
-    draft_prompt = f"""당신은 아이즈모바일 고객 응대 전문가입니다.
-이번 주 커뮤니티에서 아래 이슈가 집중 발생했습니다.
-
-주요 이슈: {main_issue}
-관련 키워드: {', '.join(extra_keywords)}
-
-관련 게시글:
-{chr(10).join(f"- {p['title']}" for p in all_posts[:10])}
-
-아래 형식으로 대응 초안을 작성해주세요:
-
-## 이슈 요약
-(2줄 이내)
-
-## 고객 응대 초안
-(실제 고객에게 전달할 수 있는 공식 응대 문구)
-
-## 내부 조치 권고
-- 조치1
-- 조치2
-- 조치3
-
-한국어로 작성해주세요."""
-
-    response_draft = ""
-    try:
-        async with httpx.AsyncClient(timeout=60) as client:
-            resp = await client.post(gemini_url, json={"contents": [{"parts": [{"text": draft_prompt}]}]})
-            if resp.status_code == 200:
-                response_draft = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
-                print(f"    [Gemini] 대응 초안 작성 완료")
-            else:
-                print(f"    [Gemini] 오류: {resp.status_code}")
-    except Exception as e:
-        print(f"    [Gemini] 오류: {e}")
-
-    return {"response_draft": response_draft}
-
-
-# ── Groq: 정기 리포트 생성 ────────────────────────────────
-async def generate_report(all_posts: list[dict], week_label: str, naver_negative: dict, severity: str, main_issue: str) -> str:
-    if not all_posts:
-        return "이번 주 수집된 언급 데이터가 없습니다."
+# ── Groq: 주간 리포트 생성 ────────────────────────────────
+async def generate_weekly_report(
+    all_posts: list[dict],
+    week_label: str,
+    naver_negative: dict,
+    prev_stats: dict,
+    current_stats: dict,
+) -> str:
 
     site_summary = {}
     for post in all_posts:
@@ -470,8 +376,29 @@ async def generate_report(all_posts: list[dict], week_label: str, naver_negative
             site_summary[site] = []
         site_summary[site].append(post)
 
+    # 트렌드 비교 텍스트 생성
+    trend_text = ""
+    if prev_stats:
+        prev_total = prev_stats.get("total", 0)
+        curr_total = current_stats.get("total", 0)
+        prev_neg = prev_stats.get("negative", 0)
+        curr_neg = current_stats.get("negative", 0)
+        trend_text = f"""
+지난 주 ({prev_stats.get('week', '이전 주')}):
+- 총 언급: {prev_total}건
+- 부정 언급: {prev_neg}건
+- 주요 이슈: {prev_stats.get('main_issue', '없음')}
+
+이번 주 변화:
+- 총 언급: {curr_total}건 ({'+' if curr_total >= prev_total else ''}{curr_total - prev_total}건)
+- 부정 언급: {curr_neg}건 ({'+' if curr_neg >= prev_neg else ''}{curr_neg - prev_neg}건)
+"""
+
     prompt = f"""당신은 브랜드 평판 분석 전문가입니다.
-기간: {week_label} | 총 수집: {len(all_posts)}건 | 심각도: {severity}
+아래는 이번 주 커뮤니티에서 수집된 '아이즈모바일' 관련 게시글 데이터입니다.
+
+기간: {week_label}
+총 수집: {len(all_posts)}건
 
 """
     for site, posts in site_summary.items():
@@ -487,15 +414,18 @@ async def generate_report(all_posts: list[dict], week_label: str, naver_negative
         prompt += f"\n\n## 네이버 부정 언급 ({naver_total}건)\n"
         for api_type, items in naver_negative.items():
             if items:
-                prompt += f"### {'블로그' if api_type == 'blog' else '카페'}\n"
+                type_name = {"blog": "블로그", "cafe": "카페"}[api_type]
+                prompt += f"### {type_name}\n"
                 for item in items:
                     prompt += f"- [{item['date']}] {item['title']}\n"
 
-    if main_issue:
-        prompt += f"\n\n## 주요 이슈 (AI 감지)\n{main_issue}\n"
+    if trend_text:
+        prompt += f"\n\n## 주차별 트렌드\n{trend_text}"
 
-    prompt += """
+    prompt += f"""
+
 아래 형식으로 리포트를 작성해주세요.
+각 항목은 반드시 새 줄에서 시작하고 앞뒤로 빈 줄을 넣어주세요.
 
 ## 1. 이번 주 핵심 요약
 (3줄 이내)
@@ -505,8 +435,8 @@ async def generate_report(all_posts: list[dict], week_label: str, naver_negative
 - 뽐뿌: X건 (주요 토픽)
 
 ## 3. 감성 분석
-- 긍정: X건
-- 부정: X건
+- 긍정: X건 (주요 내용)
+- 부정: X건 (주요 내용)
 - 중립: X건
 - 감성 점수: X/10
 
@@ -514,11 +444,16 @@ async def generate_report(all_posts: list[dict], week_label: str, naver_negative
 - 이슈1
 - 이슈2
 
-## 5. 네이버 부정 언급 현황
-- 블로그 부정글: X건
-- 카페 부정글: X건
+## 5. 주차별 트렌드
+- 지난 주 대비 언급량 변화
+- 부정 언급 증감
+- 새로 등장한 이슈
 
-## 6. 대응 제언
+## 6. 네이버 부정 언급 현황
+- 블로그 부정글: X건 (주요 내용)
+- 카페 부정글: X건 (주요 내용)
+
+## 7. 대응 제언 (전략적 관점)
 - 제언1
 - 제언2
 
@@ -538,6 +473,39 @@ async def generate_report(all_posts: list[dict], week_label: str, naver_negative
     return "리포트 생성 실패"
 
 
+# ── Groq: 감성 통계 집계 ──────────────────────────────────
+async def get_sentiment_stats(all_posts: list[dict]) -> dict:
+    if not all_posts:
+        return {"positive": 0, "negative": 0, "neutral": 0, "main_issue": ""}
+
+    titles = [p["title"] for p in all_posts[:20]]
+    prompt = f"""아래 '아이즈모바일' 관련 게시글 제목들의 감성을 분류해주세요.
+
+{NEGATIVE_CRITERIA}
+
+게시글:
+{chr(10).join(f"{i}. {t}" for i, t in enumerate(titles))}
+
+JSON만 응답:
+{{"positive": 긍정수, "negative": 부정수, "neutral": 중립수, "main_issue": "주요 이슈 한 줄"}}"""
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "max_tokens": 200, "temperature": 0.1},
+            )
+            if resp.status_code == 200:
+                text = resp.json()["choices"][0]["message"]["content"]
+                match = re.search(r'\{.*\}', text, re.DOTALL)
+                if match:
+                    return json.loads(match.group())
+    except Exception as e:
+        print(f"[Groq] 통계 오류: {e}")
+    return {"positive": 0, "negative": 0, "neutral": 0, "main_issue": ""}
+
+
 # ── 이메일 HTML 생성 ───────────────────────────────────────
 def format_report_html(report: str) -> str:
     lines = report.split("\n")
@@ -553,7 +521,7 @@ def format_report_html(report: str) -> str:
                 f'border-left:4px solid #1a73e8; border-radius:4px;">'
                 f'<strong style="font-size:14px; color:#1a73e8;">{title}</strong></div>'
             )
-        elif line.startswith("- ") or line.startswith("• "):
+        elif line.startswith("- "):
             text = line[2:]
             html_parts.append(f'<div style="padding:4px 14px 4px 28px; color:#444; font-size:13px;">• {text}</div>')
         else:
@@ -595,7 +563,7 @@ def build_community_table(all_posts: list[dict]) -> str:
     return html
 
 
-def build_naver_table(naver_data: dict, label: str = "네이버", color: str = "#34a853") -> str:
+def build_naver_table(naver_data: dict, color: str = "#34a853", label: str = "네이버") -> str:
     type_names = {"blog": "블로그", "cafe": "카페"}
     html = ""
     for api_type, items in naver_data.items():
@@ -625,60 +593,17 @@ def build_naver_table(naver_data: dict, label: str = "네이버", color: str = "
     return html
 
 
-# ── 긴급 알림 이메일 ───────────────────────────────────────
-def send_alert_email(subject: str, main_issue: str, response_draft: str, all_posts: list[dict], week_label: str):
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"🚨 [긴급] 아이즈모바일 이슈 감지 — {week_label}"
-    msg["From"] = GMAIL_USER
-    msg["To"]   = REPORT_TO
-
-    draft_html = format_report_html(response_draft)
-    related = [p for p in all_posts if any(k in p["title"] for k in main_issue.split()[:2])][:5]
-    related_html = "".join([
-        f'<li style="margin:4px 0;"><a href="{p["url"]}" style="color:#c53030;">{p["title"]}</a> [{p["date"]}]</li>'
-        for p in related
-    ])
-
-    html = f"""
-<html>
-<body style="font-family:sans-serif; line-height:1.7; color:#333; max-width:720px; margin:0 auto; padding:24px;">
-  <div style="background:#c53030; color:white; padding:16px 20px; border-radius:8px; margin-bottom:24px;">
-    <div style="font-size:18px; font-weight:500;">🚨 커뮤니티 이슈 급증 감지</div>
-    <div style="font-size:12px; opacity:0.9; margin-top:4px;">{week_label} · 즉각 확인 필요</div>
-  </div>
-  <div style="background:#fff5f5; border-left:4px solid #e53e3e; padding:16px; border-radius:4px; margin-bottom:20px;">
-    <strong style="color:#c53030;">주요 이슈:</strong> {main_issue}
-  </div>
-  <h3 style="font-size:15px; margin-bottom:8px;">관련 게시글</h3>
-  <ul style="margin:0; padding-left:16px;">{related_html}</ul>
-  <h3 style="font-size:15px; margin-top:24px; margin-bottom:8px;">대응 초안 (Gemini 작성)</h3>
-  <div style="border:1px solid #eee; border-radius:8px; padding:8px 0;">
-    {draft_html}
-  </div>
-  <hr style="border:none; border-top:1px solid #eee; margin-top:32px;">
-  <p style="font-size:11px; color:#bbb;">아이즈모바일 · AI 에이전트 긴급 알림</p>
-</body>
-</html>"""
-
-    msg.attach(MIMEText(html, "html"))
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-        smtp.send_message(msg)
-    print(f"[긴급 알림] 발송 완료 → {REPORT_TO}")
-
-
-# ── 정기 리포트 이메일 ─────────────────────────────────────
-def send_regular_email(subject: str, report: str, all_posts: list[dict], naver_data: dict, naver_negative: dict):
+def send_weekly_email(subject: str, report: str, all_posts: list[dict], naver_data: dict, naver_negative: dict):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = GMAIL_USER
     msg["To"]   = REPORT_TO
 
-    report_html    = format_report_html(report)
-    community_html = build_community_table(all_posts)
-    naver_all_html = build_naver_table(naver_data, "네이버", "#34a853")
-    naver_neg_html = build_naver_table(naver_negative, "네이버 부정글", "#e53e3e")
-    naver_total    = sum(len(v) for v in naver_data.values())
+    report_html     = format_report_html(report)
+    community_html  = build_community_table(all_posts)
+    naver_all_html  = build_naver_table(naver_data, "#34a853", "네이버")
+    naver_neg_html  = build_naver_table(naver_negative, "#e53e3e", "네이버 부정글")
+    naver_total     = sum(len(v) for v in naver_data.values())
     naver_neg_total = sum(len(v) for v in naver_negative.values())
 
     html = f"""
@@ -705,7 +630,7 @@ def send_regular_email(subject: str, report: str, all_posts: list[dict], naver_d
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
         smtp.login(GMAIL_USER, GMAIL_APP_PASSWORD)
         smtp.send_message(msg)
-    print(f"[정기 리포트] 발송 완료 → {REPORT_TO}")
+    print(f"[Gmail] 정기 리포트 발송 완료 → {REPORT_TO}")
 
 
 # ── 메인 ───────────────────────────────────────────────────
@@ -714,7 +639,7 @@ async def main():
     _ppomppu_done = False
 
     week_label = get_week_label()
-    print(f"[시작] {week_label} 커뮤니티 모니터링 AI 에이전트")
+    print(f"[시작] {week_label} 주간 리포트")
 
     # ① 커뮤니티 수집
     all_posts = []
@@ -731,8 +656,6 @@ async def main():
             all_posts.extend(await crawl_dcinside(page, keyword))
             await asyncio.sleep(2)
             all_posts.extend(await crawl_ppomppu(page, keyword))
-            await asyncio.sleep(2)
-            all_posts.extend(await crawl_fmkorea(page, keyword))
             await asyncio.sleep(2)
 
         await browser.close()
@@ -752,38 +675,42 @@ async def main():
     print("\n[네이버] 수집 중...")
     naver_data = await crawl_naver()
 
-    # ③ Groq: 부정글 분류 + 심각도 판단
-    print("\n[Groq] 분석 중...")
-    analysis = await groq_analyze(unique_posts, naver_data)
-    naver_negative = analysis["naver_negative"]
-    severity       = analysis["severity"]
-    main_issue     = analysis["main_issue"]
-    extra_keywords = analysis["extra_keywords"]
+    # ③ 네이버 부정글 분류
+    print("\n[Groq] 네이버 부정글 분류 중...")
+    naver_negative = await classify_naver_negative(naver_data)
 
-    print(f"\n[판단] 심각도: {severity}")
+    # ④ 감성 통계 집계
+    print("\n[Groq] 감성 통계 집계 중...")
+    sentiment = await get_sentiment_stats(unique_posts)
+    naver_neg_total = sum(len(v) for v in naver_negative.values())
 
-    # ④ 심각도 높을 때 Gemini 행동
-    gemini_result = await gemini_action(severity, main_issue, extra_keywords, unique_posts)
+    current_stats = {
+        "week": week_label,
+        "total": len(unique_posts),
+        "positive": sentiment.get("positive", 0),
+        "negative": sentiment.get("negative", 0) + naver_neg_total,
+        "neutral": sentiment.get("neutral", 0),
+        "main_issue": sentiment.get("main_issue", ""),
+    }
 
-    # ⑤ 심각도 높을 때 긴급 알림 발송
-    if severity == "높음" and gemini_result.get("response_draft"):
-        print("\n[긴급 알림] 발송 중...")
-        send_alert_email(
-            subject=f"🚨 [긴급] 아이즈모바일 이슈 감지",
-            main_issue=main_issue,
-            response_draft=gemini_result["response_draft"],
-            all_posts=unique_posts,
-            week_label=week_label,
-        )
+    # ⑤ 지난 주 데이터 로드
+    weekly_data = load_weekly_data()
+    prev_week_label = get_prev_week_label()
+    prev_stats = weekly_data.get(prev_week_label, {})
+    print(f"[트렌드] 지난 주 데이터: {'있음' if prev_stats else '없음 (첫 실행)'}")
 
-    # ⑥ Groq: 정기 리포트 생성
-    print("\n[분석] Groq 리포트 생성 중...")
-    report = await generate_report(unique_posts, week_label, naver_negative, severity, main_issue)
+    # ⑥ 리포트 생성
+    print("\n[Groq] 주간 리포트 생성 중...")
+    report = await generate_weekly_report(unique_posts, week_label, naver_negative, prev_stats, current_stats)
     print(report)
 
-    # ⑦ 정기 리포트 발송
-    print("\n[발송] 정기 리포트 전송 중...")
-    send_regular_email(
+    # ⑦ 이번 주 데이터 저장
+    save_weekly_data(week_label, current_stats)
+    print(f"\n[데이터] {week_label} 통계 저장 완료")
+
+    # ⑧ 이메일 발송
+    print("\n[발송] 주간 리포트 전송 중...")
+    send_weekly_email(
         subject=f"[커뮤니티 모니터링] 아이즈모바일 {week_label}",
         report=report,
         all_posts=unique_posts,
