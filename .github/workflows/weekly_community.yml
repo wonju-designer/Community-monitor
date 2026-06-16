@@ -1,15 +1,15 @@
-name: 주간 커뮤니티 모니터링 (아이즈비전)
+name: 주간 커뮤니티 모니터링 (아이즈모바일)
 
 on:
   schedule:
-    - cron: '0 23 * * 0'  # 일요일 UTC 23:00 = 월요일 KST 08:00 (지연 감안)
-  workflow_dispatch:        # 수동 실행
+    - cron: '0 23 * * 0'   # 일요일 UTC 23:00 = 월요일 KST 08:00
+  workflow_dispatch:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  community-monitor:
+  weekly-report:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -28,10 +28,9 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
-      - name: 커뮤니티 수집 + 리포트 발송
+      - name: 주간 리포트 실행
         env:
           GROQ_API_KEY:          ${{ secrets.GROQ_API_KEY }}
-          GEMINI_API_KEY:        ${{ secrets.GEMINI_API_KEY }}
           GMAIL_USER:            ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD:    ${{ secrets.GMAIL_APP_PASSWORD }}
           REPORT_TO:             ${{ secrets.REPORT_TO }}
@@ -39,12 +38,13 @@ jobs:
           NAVER_CLIENT_SECRET:   ${{ secrets.NAVER_CLIENT_SECRET }}
         run: python crawl_community.py
 
-      - name: 스케줄 유지용 더미 커밋
+      - name: 주차별 데이터 저장
         if: github.event_name == 'schedule'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          echo "Last run: $(date)" > .last_run
-          git add .last_run
-          git commit -m "chore: keep schedule alive [$(date +%Y-%m-%d)]" || echo "Nothing to commit"
+          git add weekly_data.json 2>/dev/null || true
+          echo "Weekly report: $(date)" > .weekly_run
+          git add .weekly_run
+          git commit -m "chore: weekly report [$(date +%Y-%m-%d)]" || echo "Nothing to commit"
           git push || echo "Push skipped"
