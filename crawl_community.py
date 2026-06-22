@@ -28,6 +28,22 @@ NAVER_CLIENT_ID     = os.environ["NAVER_CLIENT_ID"]
 NAVER_CLIENT_SECRET = os.environ["NAVER_CLIENT_SECRET"]
 
 KEYWORDS = ["아이즈모바일", "아이즈"]
+
+# 제외 키워드 (제목에 포함되면 수집하지 않음)
+EXCLUDE_KEYWORDS = [
+    "아이즈원",        # 걸그룹
+    "퍼스널아이즈",    # 라식 클리닉
+    "라식", "라섹",    # 안과 시술
+    "스마트아이즈",    # 다른 브랜드
+    "프라이빗아이즈",  # 다른 브랜드
+    "아이즈코리아",    # 다른 브랜드
+]
+
+def is_excluded(title: str) -> bool:
+    """제외 키워드가 제목에 있는지 확인"""
+    title_norm = title.replace(" ", "")
+    return any(ex.replace(" ", "") in title_norm for ex in EXCLUDE_KEYWORDS)
+
 WEEKLY_DATA_FILE = "weekly_data.json"
 
 # ── 부정 판단 기준 ─────────────────────────────────────────
@@ -137,6 +153,10 @@ async def crawl_dcinside(page, keyword: str) -> list[dict]:
                     continue
                 if not any(k in title for k in ["아이즈모바일", "아이즈"]):
                     continue
+                # 제외 키워드 확인 (아이즈원, 퍼스널아이즈 등)
+                if is_excluded(title):
+                    print(f"    [디시] 제외: {title[:40]}")
+                    continue
                 href = await title_el.get_attribute("href") or ""
                 full_url = f"https://gall.dcinside.com{href}" if href.startswith("/") else href
                 date_el = await row.query_selector("td.gall_date, span.gall_date")
@@ -221,6 +241,10 @@ async def crawl_ppomppu(page, keyword: str) -> list[dict]:
                     title_clean = title.replace("[","").replace("]","")
                     if not any(k in title_clean for k in KEYWORDS):
                         continue
+                    # 제외 키워드 확인 (퍼스널아이즈, 아이즈원 등)
+                    if is_excluded(title):
+                        print(f"    [뽐뿌] 제외: {title[:40]}")
+                        continue
                     seen_nos.add(no)
                     full_url = f"https://www.ppomppu.co.kr{href}" if href.startswith("/") else href
                     full_url = re.sub(r"&keyword=[^&]*", "", full_url)
@@ -303,6 +327,8 @@ async def crawl_naver() -> dict:
                     title = re.sub(r'<[^>]+>', '', item.get("title", "")).strip()
                     desc  = re.sub(r'<[^>]+>', '', item.get("description", "")).strip()
                     if "아이즈모바일" not in title.replace(" ", ""):
+                        continue
+                    if is_excluded(title):
                         continue
                     results[api_type].append({
                         "title": title, "description": desc[:200],
@@ -660,11 +686,25 @@ async def main():
 
         await browser.close()
 
-    # 중복 제거
+    # 중복 제거 (URL의 쿼리스트링 무시 + 제목 정규화)
+    def dedup_key(post):
+        url = post.get("url", "")
+        if url:
+            # 디시: ?id=mvnogallery&no=12345 형태에서 no= 값만 추출
+            no_match = re.search(r"[?&]no=(\d+)", url)
+            if no_match:
+                return f"dci:{no_match.group(1)}"
+            # 뽐뿌도 동일
+            no_match2 = re.search(r"no=(\d+)", url)
+            if no_match2:
+                return f"pp:{no_match2.group(1)}"
+            return url.split("?")[0]
+        return post.get("title", "")
+
     seen = set()
     unique_posts = []
     for post in all_posts:
-        key = post["url"] or post["title"]
+        key = dedup_key(post)
         if key and key not in seen:
             seen.add(key)
             unique_posts.append(post)
