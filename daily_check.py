@@ -27,6 +27,21 @@ GMAIL_APP_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
 REPORT_TO          = os.environ["REPORT_TO"]
 
 KEYWORDS = ["아이즈모바일", "아이즈"]
+
+# 제외 키워드 (제목에 포함되면 수집하지 않음)
+EXCLUDE_KEYWORDS = [
+    "아이즈원",        # 걸그룹
+    "퍼스널아이즈",    # 라식 클리닉
+    "라식", "라섹",    # 안과 시술
+    "스마트아이즈",    # 다른 브랜드
+    "프라이빗아이즈",  # 다른 브랜드
+    "아이즈코리아",    # 다른 브랜드
+]
+
+def is_excluded(title: str) -> bool:
+    """제외 키워드가 제목에 있는지 확인"""
+    title_norm = title.replace(" ", "")
+    return any(ex.replace(" ", "") in title_norm for ex in EXCLUDE_KEYWORDS)
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
 # ── 부정 판단 기준 ─────────────────────────────────────────
@@ -100,6 +115,8 @@ async def crawl_dcinside_today(page, keyword: str) -> list[dict]:
                     continue
                 if not any(k in title for k in ["아이즈모바일", "아이즈"]):
                     continue
+                if is_excluded(title):
+                    continue
                 date_el = await row.query_selector("td.gall_date, span.gall_date")
                 date_text = (await date_el.get_attribute("title") or await date_el.inner_text()).strip() if date_el else ""
                 if not is_today(date_text):
@@ -160,6 +177,8 @@ async def crawl_ppomppu_today(page) -> list[dict]:
                         continue
                     title_clean = title.replace("[","").replace("]","")
                     if not any(k in title_clean for k in KEYWORDS):
+                        continue
+                    if is_excluded(title):
                         continue
                     parent = await link.evaluate_handle(
                         "el => el.closest('li') || el.closest('tr') || el.closest('div') || el.parentElement"
