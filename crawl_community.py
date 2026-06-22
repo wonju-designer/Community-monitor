@@ -498,11 +498,8 @@ async def generate_weekly_report(
 - 블로그 부정글: X건 (주요 내용)
 - 카페 부정글: X건 (주요 내용)
 
-## 7. 대응 제언 (전략적 관점)
-- 제언1
-- 제언2
-
-한국어로 간결하게 작성해주세요."""
+한국어로 간결하게 작성해주세요.
+주의: 대응 제언, 권고사항, 추천사항 등은 포함하지 마세요. 사실 기반 모니터링 결과만 제시하세요."""
 
     try:
         async with httpx.AsyncClient(timeout=60) as client:
