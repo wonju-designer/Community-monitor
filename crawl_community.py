@@ -406,18 +406,34 @@ async def generate_weekly_report(
     trend_text = ""
     if prev_stats:
         prev_total = prev_stats.get("total", 0)
+        prev_pos   = prev_stats.get("positive", 0)
+        prev_neg   = prev_stats.get("negative", 0)
+        prev_neu   = prev_stats.get("neutral", 0)
         curr_total = current_stats.get("total", 0)
-        prev_neg = prev_stats.get("negative", 0)
-        curr_neg = current_stats.get("negative", 0)
+        curr_pos   = current_stats.get("positive", 0)
+        curr_neg   = current_stats.get("negative", 0)
+        curr_neu   = current_stats.get("neutral", 0)
+
+        def diff_str(curr, prev):
+            d = curr - prev
+            if d > 0:
+                return f"{curr}건 (지난주 {prev}건 → +{d}건 증가)"
+            elif d < 0:
+                return f"{curr}건 (지난주 {prev}건 → {d}건 감소)"
+            else:
+                return f"{curr}건 (지난주 {prev}건 → 동일)"
+
         trend_text = f"""
-지난 주 ({prev_stats.get('week', '이전 주')}):
+지난 주 ({prev_stats.get('week', '이전 주')}) 통계:
 - 총 언급: {prev_total}건
-- 부정 언급: {prev_neg}건
+- 긍정: {prev_pos}건 / 부정: {prev_neg}건 / 중립: {prev_neu}건
 - 주요 이슈: {prev_stats.get('main_issue', '없음')}
 
-이번 주 변화:
-- 총 언급: {curr_total}건 ({'+' if curr_total >= prev_total else ''}{curr_total - prev_total}건)
-- 부정 언급: {curr_neg}건 ({'+' if curr_neg >= prev_neg else ''}{curr_neg - prev_neg}건)
+이번 주 ({week_label}) 통계:
+- 총 언급: {diff_str(curr_total, prev_total)}
+- 긍정: {diff_str(curr_pos, prev_pos)}
+- 부정: {diff_str(curr_neg, prev_neg)}
+- 중립: {diff_str(curr_neu, prev_neu)}
 """
 
     prompt = f"""당신은 브랜드 평판 분석 전문가입니다.
@@ -471,9 +487,12 @@ async def generate_weekly_report(
 - 이슈2
 
 ## 5. 주차별 트렌드
-- 지난 주 대비 언급량 변화
-- 부정 언급 증감
-- 새로 등장한 이슈
+(반드시 위 "주차별 트렌드" 데이터의 구체적인 숫자를 그대로 인용할 것. "증가/감소"만 쓰지 말고 "X건에서 Y건으로 +Z건 증가" 형태로 작성)
+- 총 언급: 지난주 X건 → 이번주 Y건 (+Z건 증가/감소)
+- 긍정 언급: 지난주 X건 → 이번주 Y건 (+Z건 증가/감소)
+- 부정 언급: 지난주 X건 → 이번주 Y건 (+Z건 증가/감소)
+- 중립 언급: 지난주 X건 → 이번주 Y건 (+Z건 증가/감소)
+- 새로 등장한 이슈 (있을 경우)
 
 ## 6. 네이버 부정 언급 현황
 - 블로그 부정글: X건 (주요 내용)
