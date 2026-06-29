@@ -8,6 +8,9 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
+permissions:
+  contents: write   # weekly_data.json 커밋을 위해 필요
+
 jobs:
   weekly-report:
     runs-on: ubuntu-latest
@@ -16,6 +19,8 @@ jobs:
     steps:
       - name: 코드 체크아웃
         uses: actions/checkout@v4.2.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Python 3.11 설정
         uses: actions/setup-python@v5.6.0
@@ -30,21 +35,24 @@ jobs:
 
       - name: 주간 리포트 실행
         env:
-          GROQ_API_KEY:          ${{ secrets.GROQ_API_KEY }}
-          GMAIL_USER:            ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD:    ${{ secrets.GMAIL_APP_PASSWORD }}
-          REPORT_TO:             ${{ secrets.REPORT_TO }}
-          NAVER_CLIENT_ID:       ${{ secrets.NAVER_CLIENT_ID }}
-          NAVER_CLIENT_SECRET:   ${{ secrets.NAVER_CLIENT_SECRET }}
+          GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}
+          GMAIL_USER:          ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD:  ${{ secrets.GMAIL_APP_PASSWORD }}
+          REPORT_TO:           ${{ secrets.REPORT_TO }}
+          NAVER_CLIENT_ID:     ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
         run: python crawl_community.py
 
-      - name: 주차별 데이터 저장
-        if: github.event_name == 'schedule'
+      - name: weekly_data.json 커밋
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add weekly_data.json 2>/dev/null || true
-          echo "Weekly report: $(date)" > .weekly_run
-          git add .weekly_run
-          git commit -m "chore: weekly report [$(date +%Y-%m-%d)]" || echo "Nothing to commit"
-          git push || echo "Push skipped"
+          if [ -f weekly_data.json ]; then
+            git add weekly_data.json
+            echo "Weekly report: $(date)" > .weekly_run
+            git add .weekly_run
+            git commit -m "chore: weekly data update [$(date +%Y-%m-%d)]" || echo "Nothing to commit"
+            git push || echo "Push skipped"
+          else
+            echo "weekly_data.json 파일이 없습니다"
+          fi
